@@ -22,6 +22,7 @@ import com.google.firebase.database.MutableData
 import com.google.firebase.database.Transaction
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.firestore
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -53,7 +54,7 @@ class TapRepository(
                 // Ignore if already initialized
             }
         },
-        null
+        try { Firebase.firestore } catch (_: Exception) { null }
     )
 
     constructor() : this(
@@ -64,7 +65,7 @@ class TapRepository(
                 // Ignore if already initialized
             }
         },
-        null
+        try { Firebase.firestore } catch (_: Exception) { null }
     )
 
     constructor(firestore: FirebaseFirestore) : this(
@@ -270,52 +271,86 @@ class TapRepository(
             val balRef = firestore.collection("user_balances").document(userId)
             firestore.runTransaction { tx ->
                 val snap = tx.get(balRef)
-                val curCoins = snap.getLong("availableCoins") ?: 0L
-                val curTotal = snap.getLong("totalLifetimeCoins") ?: 0L
-                val curTaps = snap.getLong("totalTaps") ?: 0L
-                tx.update(
-                    balRef,
-                    mapOf(
-                        "availableCoins" to curCoins + coinsEarned,
-                        "totalLifetimeCoins" to curTotal + coinsEarned,
-                        "totalTaps" to curTaps + tapsCount,
-                        "currentEnergy" to newEnergy,
-                        "lastEnergyUpdatedAt" to System.currentTimeMillis(),
-                        "updatedAt" to System.currentTimeMillis()
-                    )
-                )
-            }.await()
-            return
-        }
-
-        val ref = rtdb.getReference("user_balances").child(userId)
-        suspendCancellableCoroutine<Unit> { continuation ->
-            ref.runTransaction(object : Transaction.Handler {
-                override fun doTransaction(currentData: MutableData): Transaction.Result {
-                    var balance = currentData.getValue(UserBalance::class.java)
-                    if (balance == null) {
-                        balance = UserBalance(userId = userId)
-                    }
-                    val updated = balance.copy(
-                        availableCoins = balance.availableCoins + coinsEarned,
-                        totalLifetimeCoins = balance.totalLifetimeCoins + coinsEarned,
-                        totalTaps = balance.totalTaps + tapsCount,
-                        currentEnergy = newEnergy.coerceIn(0, balance.maxEnergy),
+                if (!snap.exists()) {
+                    val initial = UserBalance(
+                        userId = userId,
+                        availableCoins = coinsEarned,
+                        totalLifetimeCoins = coinsEarned,
+                        totalTaps = tapsCount,
+                        currentEnergy = newEnergy,
+                        maxEnergy = 1000,
                         lastEnergyUpdatedAt = System.currentTimeMillis(),
                         updatedAt = System.currentTimeMillis()
                     )
-                    currentData.value = updated
-                    return Transaction.success(currentData)
+                    tx.set(balRef, initial)
+                } else {
+                    val curCoins = snap.getLong("availableCoins") ?: 0L
+                    val curTotal = snap.getLong("totalLifetimeCoins") ?: 0L
+                    val curTaps = snap.getLong("totalTaps") ?: 0L
+                    tx.update(
+                        balRef,
+                        mapOf(
+                            "availableCoins" to curCoins + coinsEarned,
+                            "totalLifetimeCoins" to curTotal + coinsEarned,
+                            "totalTaps" to curTaps + tapsCount,
+                            "currentEnergy" to newEnergy,
+                            "lastEnergyUpdatedAt" to System.currentTimeMillis(),
+                            "updatedAt" to System.currentTimeMillis()
+                        )
+                    )
                 }
+            }.await()
+        }
 
-                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
-                    if (error != null) {
-                        continuation.resumeWithException(error.toException())
-                    } else {
-                        continuation.resume(Unit)
+        try {
+            val ref = rtdb.getReference("user_balances").child(userId)
+            if (firestore != null) {
+                ref.runTransaction(object : Transaction.Handler {
+                    override fun doTransaction(currentData: MutableData): Transaction.Result {
+                        val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
+                        val updated = balance.copy(
+                            availableCoins = balance.availableCoins + coinsEarned,
+                            totalLifetimeCoins = balance.totalLifetimeCoins + coinsEarned,
+                            totalTaps = balance.totalTaps + tapsCount,
+                            currentEnergy = newEnergy.coerceIn(0, balance.maxEnergy),
+                            lastEnergyUpdatedAt = System.currentTimeMillis(),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        currentData.value = updated
+                        return Transaction.success(currentData)
                     }
+
+                    override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {}
+                })
+            } else {
+                suspendCancellableCoroutine<Unit> { continuation ->
+                    ref.runTransaction(object : Transaction.Handler {
+                        override fun doTransaction(currentData: MutableData): Transaction.Result {
+                            val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
+                            val updated = balance.copy(
+                                availableCoins = balance.availableCoins + coinsEarned,
+                                totalLifetimeCoins = balance.totalLifetimeCoins + coinsEarned,
+                                totalTaps = balance.totalTaps + tapsCount,
+                                currentEnergy = newEnergy.coerceIn(0, balance.maxEnergy),
+                                lastEnergyUpdatedAt = System.currentTimeMillis(),
+                                updatedAt = System.currentTimeMillis()
+                            )
+                            currentData.value = updated
+                            return Transaction.success(currentData)
+                        }
+
+                        override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                            if (error != null) {
+                                continuation.resumeWithException(error.toException())
+                            } else {
+                                continuation.resume(Unit)
+                            }
+                        }
+                    })
                 }
-            })
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "RTDB transaction: ${e.message}")
         }
     }
 

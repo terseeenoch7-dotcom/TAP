@@ -35,8 +35,12 @@ workflows:
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> $CM_ENV
       - name: Build Android Release APK and Bundle
         script: |
-          chmod +x gradlew || gradle wrapper || true
-          gradle assembleRelease assembleDebug bundleRelease
+          if [ ! -f "gradlew" ]; then
+            echo "Generating Gradle 9.3.1 wrapper..."
+            gradle wrapper --gradle-version 9.3.1 --distribution-type bin || true
+          fi
+          chmod +x gradlew
+          ./gradlew assembleRelease assembleDebug bundleRelease
       - name: Verify Signed APK Artifacts
         script: |
           ls -la app/build/outputs/apk/release/ || true

@@ -7,6 +7,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import com.example.ui.components.CentralTapButton
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -112,14 +113,6 @@ fun HomeScreen(
     onNavigateToBoosters: () -> Unit,
     onOpenAiStrategist: () -> Unit
 ) {
-    val context = LocalContext.current
-    var isCoinPressed by remember { mutableStateOf(false) }
-    val coinScale by animateFloatAsState(
-        targetValue = if (isCoinPressed) 0.92f else 1.0f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-        label = "coinScale"
-    )
-
     var showAdRewardDialog by remember { mutableStateOf(false) }
     var soundEnabled by remember { mutableStateOf(audioHapticHelper.isSoundEnabled) }
 
@@ -320,77 +313,33 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        // Main Coin Tapping Area
-        Box(
-            modifier = Modifier
-                .size(280.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            // Radiant Golden Background Aura
-            Box(
-                modifier = Modifier
-                    .size(250.dp)
-                    .scale(if (isCoinPressed) 1.05f else 1.0f)
-                    .shadow(
-                        elevation = if (uiState.isTurboActive) 48.dp else 32.dp,
-                        shape = CircleShape,
-                        spotColor = if (uiState.isTurboActive) TapNeonOrange else TapGoldPrimary
-                    )
-            )
+        val multitapBonus = (uiState.boosters?.multitapLevel ?: 1) - 1
+        val multiplier = if (uiState.isTurboActive) 2 else 1
+        val currentCoinsPerTap = (uiState.config.coinsPerTap + multitapBonus) * multiplier
 
-            // The Coin Button
-            Box(
-                modifier = Modifier
-                    .size(250.dp)
-                    .scale(coinScale)
-                    .clip(CircleShape)
-                    .border(
-                        width = 4.dp,
-                        brush = Brush.radialGradient(
-                            listOf(
-                                if (uiState.isTurboActive) TapNeonOrange else TapGoldLight,
-                                TapGoldDark
-                            )
-                        ),
-                        shape = CircleShape
-                    )
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = { offset ->
-                                isCoinPressed = true
-                                audioHapticHelper.playTapFeedback()
-                                viewModel.onCoinTapped(offset.x, offset.y)
-                                tryAwaitRelease()
-                                isCoinPressed = false
-                            }
-                        )
-                    }
-                    .testTag("main_tap_coin"),
-                contentAlignment = Alignment.Center
-            ) {
-                if (uiState.customCoinBitmap != null) {
-                    Image(
-                        bitmap = uiState.customCoinBitmap.asImageBitmap(),
-                        contentDescription = "Custom AI Coin",
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Image(
-                        painter = painterResource(id = R.drawable.tap_coin),
-                        contentDescription = "TAP Gold Coin",
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+        // Central 'Tap' Button Component (Fintech Dark Aesthetic & Firestore-backed counter)
+        CentralTapButton(
+            modifier = Modifier.padding(vertical = 4.dp),
+            coinsPerTap = currentCoinsPerTap.toLong(),
+            isTurboActive = uiState.isTurboActive,
+            energyAvailable = uiState.optimisticEnergy,
+            energyCost = uiState.config.energyPerTap,
+            totalTaps = uiState.balance?.totalTaps ?: 0L,
+            customCoinBitmap = uiState.customCoinBitmap,
+            floatingParticles = uiState.floatingParticles,
+            onTap = { x, y ->
+                viewModel.onCoinTapped(x, y)
+            },
+            onRemoveParticle = { id ->
+                viewModel.removeParticle(id)
+            },
+            onEnergyDepleted = {
+                viewModel.onCoinTapped(0f, 0f)
+            },
+            playAudioHaptic = {
+                audioHapticHelper.playTapFeedback()
             }
-
-            // Floating +COINS particle effects
-            uiState.floatingParticles.forEach { particle ->
-                FloatingParticleView(
-                    particle = particle,
-                    onAnimationEnd = { viewModel.removeParticle(particle.id) }
-                )
-            }
-        }
+        )
 
         Spacer(modifier = Modifier.height(18.dp))
 
@@ -618,38 +567,4 @@ fun HomeScreen(
             shape = RoundedCornerShape(16.dp)
         )
     }
-}
-
-@Composable
-private fun FloatingParticleView(
-    particle: FloatingParticle,
-    onAnimationEnd: () -> Unit
-) {
-    val animOffsetY = remember { Animatable(0f) }
-    val animAlpha = remember { Animatable(1f) }
-
-    LaunchedEffect(particle.id) {
-        animOffsetY.animateTo(
-            targetValue = -120f,
-            animationSpec = tween(durationMillis = 800, easing = LinearEasing)
-        )
-    }
-    LaunchedEffect(particle.id) {
-        delay(400)
-        animAlpha.animateTo(
-            targetValue = 0f,
-            animationSpec = tween(durationMillis = 400)
-        )
-        onAnimationEnd()
-    }
-
-    Text(
-        text = particle.text,
-        fontSize = 26.sp,
-        fontWeight = FontWeight.Black,
-        color = TapGoldPrimary,
-        modifier = Modifier
-            .offset { IntOffset(0, animOffsetY.value.toInt()) }
-            .alpha(animAlpha.value)
-    )
 }
