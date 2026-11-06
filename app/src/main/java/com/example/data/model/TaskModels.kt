@@ -1,9 +1,6 @@
 package com.example.data.model
 
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
+import com.google.firebase.database.IgnoreExtraProperties
 
 enum class TaskCategory(val key: String, val label: String) {
     DAILY("daily", "Daily"),
@@ -22,7 +19,7 @@ data class TaskItem(
     val rewardCoins: Long = 100L,
     val actionUrl: String? = null,
     val isActive: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 @IgnoreExtraProperties
@@ -32,5 +29,5 @@ data class TaskSubmission(
     val taskId: String = "",
     val status: String = "pending", // pending, completed, claimed
     val rewardClaimed: Boolean = false,
-    @ServerTimestamp val completedAt: Timestamp? = null
+    val completedAt: Long = System.currentTimeMillis()
 )

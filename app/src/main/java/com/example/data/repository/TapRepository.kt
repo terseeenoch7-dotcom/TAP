@@ -2,7 +2,6 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
-import com.example.R
 import com.example.data.model.AppConfiguration
 import com.example.data.model.DailyCheckIn
 import com.example.data.model.NotificationItem
@@ -13,90 +12,209 @@ import com.example.data.model.UserBalance
 import com.example.data.model.UserBoosters
 import com.example.data.model.UserProfile
 import com.example.data.model.WithdrawalRequest
-import com.example.util.OperationType
-import com.example.util.handleFirestoreError
 import com.google.firebase.Firebase
-import com.google.firebase.Timestamp
 import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FieldValue
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.DatabaseReference
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.MutableData
+import com.google.firebase.database.Transaction
+import com.google.firebase.database.ValueEventListener
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.snapshots
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 private const val TAG = "TapRepository"
+const val RTDB_URL = "https://gen-lang-client-0113954346-default-rtdb.firebaseio.com/"
 
-class TapRepository(private val db: FirebaseFirestore) {
+class TapRepository(
+    private val rtdb: FirebaseDatabase,
+    private val firestore: FirebaseFirestore? = null
+) {
 
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        FirebaseDatabase.getInstance(RTDB_URL).apply {
+            try {
+                setPersistenceEnabled(true)
+            } catch (_: Exception) {
+                // Ignore if already initialized
+            }
+        },
+        null
     )
 
+    constructor() : this(
+        FirebaseDatabase.getInstance(RTDB_URL).apply {
+            try {
+                setPersistenceEnabled(true)
+            } catch (_: Exception) {
+                // Ignore if already initialized
+            }
+        },
+        null
+    )
+
+    constructor(firestore: FirebaseFirestore) : this(
+        FirebaseDatabase.getInstance(RTDB_URL).apply {
+            try {
+                setPersistenceEnabled(true)
+            } catch (_: Exception) {
+                // Ignore if already initialized
+            }
+        },
+        firestore
+    )
+
+    val database: FirebaseDatabase get() = rtdb
     private val auth = Firebase.auth
 
     fun requireUserId(): String {
         return auth.currentUser?.uid
-            ?: throw IllegalStateException("User must be signed in with Google before accessing Firestore.")
+            ?: throw IllegalStateException("User must be signed in before accessing TAP database.")
     }
 
     // ------------------------------------------------------------------------
-    // 1. User Profile
+    // Helper: Flow Builders for Realtime Database
+    // ------------------------------------------------------------------------
+    private fun <T : Any> DatabaseReference.toObjectFlow(clazz: Class<T>): Flow<T?> = callbackFlow {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val value = snapshot.getValue(clazz)
+                trySend(value)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.w(TAG, "Database error at $path: ${error.message}")
+                close(error.toException())
+            }
+        }
+        addValueEventListener(listener)
+        awaitClose { removeEventListener(listener) }
+    }
+
+    private fun <T : Any> DatabaseReference.toListFlow(clazz: Class<T>): Flow<List<T>> = callbackFlow {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val list = mutableListOf<T>()
+                for (child in snapshot.children) {
+                    child.getValue(clazz)?.let { list.add(it) }
+                }
+                trySend(list)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.w(TAG, "Database error at $path: ${error.message}")
+                close(error.toException())
+            }
+        }
+        addValueEventListener(listener)
+        awaitClose { removeEventListener(listener) }
+    }
+
+    // ------------------------------------------------------------------------
+    // 1. User Profile Management
     // ------------------------------------------------------------------------
     fun observeUserProfile(userId: String): Flow<UserProfile?> {
-        val docRef = db.collection("users").document(userId)
-        return docRef.snapshots().map { snapshot ->
-            if (snapshot.exists()) snapshot.toObject(UserProfile::class.java) else null
-        }.catch { e ->
-            handleFirestoreError(e, OperationType.GET, docRef.path)
-            throw e
+        if (firestore != null) {
+            val docRef = firestore.collection("users").document(userId)
+            return docRef.snapshots().map { snapshot ->
+                if (snapshot.exists()) snapshot.toObject(UserProfile::class.java) else null
+            }
+        }
+        val ref = rtdb.getReference("users").child(userId)
+        return ref.toObjectFlow(UserProfile::class.java).catch { e ->
+            Log.e(TAG, "Failed to observe profile for $userId", e)
+            emit(null)
         }
     }
 
-    suspend fun getOrCreateUserProfile(userId: String, email: String, displayName: String, photoUrl: String?): UserProfile {
-        val docRef = db.collection("users").document(userId)
-        val snapshot = docRef.get().await()
-        if (snapshot.exists()) {
-            return snapshot.toObject(UserProfile::class.java) ?: UserProfile(userId = userId, email = email, username = displayName)
+    suspend fun getOrCreateUserProfile(
+        userId: String,
+        email: String,
+        displayName: String,
+        photoUrl: String?
+    ): UserProfile {
+        val isAdminUser = email.equals("terseeenoch7@gmail.com", ignoreCase = true)
+        val generatedRefCode = "TAP-" + userId.take(5).uppercase()
+        val username = displayName.ifBlank { "Tapper_${userId.take(4)}" }
+
+        if (firestore != null) {
+            val docRef = firestore.collection("users").document(userId)
+            val snapshot = docRef.get().await()
+            if (snapshot.exists()) {
+                val existing = snapshot.toObject(UserProfile::class.java)
+                if (existing != null) {
+                    if (isAdminUser && existing.role != "admin") {
+                        val updated = existing.copy(role = "admin")
+                        docRef.set(updated).await()
+                        return updated
+                    }
+                    return existing
+                }
+            }
+            val profile = UserProfile(
+                userId = userId,
+                username = username,
+                email = email,
+                photoUrl = photoUrl,
+                referralCode = generatedRefCode,
+                role = if (isAdminUser) "admin" else "user",
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
+            )
+            docRef.set(profile).await()
+            val balRef = firestore.collection("user_balances").document(userId)
+            if (!balRef.get().await().exists()) {
+                balRef.set(UserBalance(userId = userId)).await()
+            }
+            return profile
         }
 
-        val generatedRefCode = "TAP-" + userId.take(5).uppercase()
-        val isAdminUser = email.equals("terseeenoch7@gmail.com", ignoreCase = true)
+        val userRef = rtdb.getReference("users").child(userId)
+        val snapshot = userRef.get().await()
+
+        if (snapshot.exists()) {
+            val existing = snapshot.getValue(UserProfile::class.java)
+            if (existing != null) {
+                if (isAdminUser && existing.role != "admin") {
+                    val updated = existing.copy(role = "admin")
+                    userRef.setValue(updated).await()
+                    return updated
+                }
+                return existing
+            }
+        }
+
         val profile = UserProfile(
             userId = userId,
-            username = displayName.ifBlank { "Tapper_${userId.take(4)}" },
+            username = username,
             email = email,
             photoUrl = photoUrl,
             referralCode = generatedRefCode,
-            role = if (isAdminUser) "admin" else "user"
+            role = if (isAdminUser) "admin" else "user",
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
         )
 
-        val payload = mapOf(
-            "userId" to profile.userId,
-            "username" to profile.username,
-            "email" to profile.email,
-            "photoUrl" to profile.photoUrl,
-            "referralCode" to profile.referralCode,
-            "accountLevel" to 1,
-            "isSuspended" to false,
-            "role" to profile.role,
-            "createdAt" to FieldValue.serverTimestamp(),
-            "updatedAt" to FieldValue.serverTimestamp()
-        ).filterValues { it != null }
+        userRef.setValue(profile).await()
 
-        docRef.set(payload).await()
+        if (isAdminUser) {
+            rtdb.getReference("admins").child(userId).setValue(true).await()
+        }
 
-        // Also initialize initial balance & boosters
         initializeUserBalanceIfMissing(userId)
         initializeUserBoostersIfMissing(userId)
         initializeDailyCheckInIfMissing(userId)
@@ -108,30 +226,34 @@ class TapRepository(private val db: FirebaseFirestore) {
     // 2. User Balance & Energy Engine
     // ------------------------------------------------------------------------
     fun observeUserBalance(userId: String): Flow<UserBalance?> {
-        val docRef = db.collection("user_balances").document(userId)
-        return docRef.snapshots().map { snapshot ->
-            if (snapshot.exists()) snapshot.toObject(UserBalance::class.java) else null
-        }.catch { e ->
-            handleFirestoreError(e, OperationType.GET, docRef.path)
-            throw e
+        if (firestore != null) {
+            val docRef = firestore.collection("user_balances").document(userId)
+            return docRef.snapshots().map { snapshot ->
+                if (snapshot.exists()) snapshot.toObject(UserBalance::class.java) else null
+            }
+        }
+        val ref = rtdb.getReference("user_balances").child(userId)
+        return ref.toObjectFlow(UserBalance::class.java).catch { e ->
+            Log.e(TAG, "Failed to observe balance for $userId", e)
+            emit(null)
         }
     }
 
     private suspend fun initializeUserBalanceIfMissing(userId: String) {
-        val docRef = db.collection("user_balances").document(userId)
-        val snapshot = docRef.get().await()
+        val ref = rtdb.getReference("user_balances").child(userId)
+        val snapshot = ref.get().await()
         if (!snapshot.exists()) {
-            val payload = mapOf(
-                "userId" to userId,
-                "availableCoins" to 0L,
-                "totalLifetimeCoins" to 0L,
-                "totalTaps" to 0L,
-                "currentEnergy" to 1000,
-                "maxEnergy" to 1000,
-                "lastEnergyUpdatedAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
+            val balance = UserBalance(
+                userId = userId,
+                availableCoins = 0L,
+                totalLifetimeCoins = 0L,
+                totalTaps = 0L,
+                currentEnergy = 1000,
+                maxEnergy = 1000,
+                lastEnergyUpdatedAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
             )
-            docRef.set(payload).await()
+            ref.setValue(balance).await()
         }
     }
 
@@ -143,228 +265,350 @@ class TapRepository(private val db: FirebaseFirestore) {
         tapsCount: Long
     ) {
         if (coinsEarned <= 0 && energyConsumed <= 0) return
-        val docRef = db.collection("user_balances").document(userId)
-        try {
-            db.runTransaction { tx ->
-                val snapshot = tx.get(docRef)
-                val currentCoins = snapshot.getLong("availableCoins") ?: 0L
-                val lifetimeCoins = snapshot.getLong("totalLifetimeCoins") ?: 0L
-                val totalTaps = snapshot.getLong("totalTaps") ?: 0L
-                val maxEnergy = (snapshot.getLong("maxEnergy") ?: 1000L).toInt()
 
-                val updatedCoins = (currentCoins + coinsEarned).coerceAtLeast(0L)
-                val updatedLifetime = lifetimeCoins + coinsEarned
-                val updatedTaps = totalTaps + tapsCount
-                val boundedEnergy = newEnergy.coerceIn(0, maxEnergy)
-
-                tx.update(docRef, mapOf(
-                    "availableCoins" to updatedCoins,
-                    "totalLifetimeCoins" to updatedLifetime,
-                    "totalTaps" to updatedTaps,
-                    "currentEnergy" to boundedEnergy,
-                    "lastEnergyUpdatedAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ))
+        if (firestore != null) {
+            val balRef = firestore.collection("user_balances").document(userId)
+            firestore.runTransaction { tx ->
+                val snap = tx.get(balRef)
+                val curCoins = snap.getLong("availableCoins") ?: 0L
+                val curTotal = snap.getLong("totalLifetimeCoins") ?: 0L
+                val curTaps = snap.getLong("totalTaps") ?: 0L
+                tx.update(
+                    balRef,
+                    mapOf(
+                        "availableCoins" to curCoins + coinsEarned,
+                        "totalLifetimeCoins" to curTotal + coinsEarned,
+                        "totalTaps" to curTaps + tapsCount,
+                        "currentEnergy" to newEnergy,
+                        "lastEnergyUpdatedAt" to System.currentTimeMillis(),
+                        "updatedAt" to System.currentTimeMillis()
+                    )
+                )
             }.await()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            return
+        }
+
+        val ref = rtdb.getReference("user_balances").child(userId)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            ref.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    var balance = currentData.getValue(UserBalance::class.java)
+                    if (balance == null) {
+                        balance = UserBalance(userId = userId)
+                    }
+                    val updated = balance.copy(
+                        availableCoins = balance.availableCoins + coinsEarned,
+                        totalLifetimeCoins = balance.totalLifetimeCoins + coinsEarned,
+                        totalTaps = balance.totalTaps + tapsCount,
+                        currentEnergy = newEnergy.coerceIn(0, balance.maxEnergy),
+                        lastEnergyUpdatedAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
+
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(Unit)
+                    }
+                }
+            })
         }
     }
 
     suspend fun refillEnergy(userId: String, amount: Int) {
-        val docRef = db.collection("user_balances").document(userId)
-        db.runTransaction { tx ->
-            val snapshot = tx.get(docRef)
-            val maxEnergy = (snapshot.getLong("maxEnergy") ?: 1000L).toInt()
-            val currentEnergy = (snapshot.getLong("currentEnergy") ?: 0L).toInt()
-            val newEnergy = (currentEnergy + amount).coerceAtMost(maxEnergy)
-            tx.update(docRef, mapOf(
-                "currentEnergy" to newEnergy,
-                "lastEnergyUpdatedAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
-        }.await()
+        val ref = rtdb.getReference("user_balances").child(userId)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            ref.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
+                    val updated = balance.copy(
+                        currentEnergy = (balance.currentEnergy + amount).coerceAtMost(balance.maxEnergy),
+                        lastEnergyUpdatedAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
+
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(Unit)
+                    }
+                }
+            })
+        }
     }
 
     // ------------------------------------------------------------------------
     // 3. Boosters & Upgrades
     // ------------------------------------------------------------------------
     fun observeUserBoosters(userId: String): Flow<UserBoosters?> {
-        val docRef = db.collection("boosters").document(userId)
-        return docRef.snapshots().map { snapshot ->
-            if (snapshot.exists()) snapshot.toObject(UserBoosters::class.java) else null
-        }.catch { e ->
-            handleFirestoreError(e, OperationType.GET, docRef.path)
-            throw e
+        val ref = rtdb.getReference("user_boosters").child(userId)
+        return ref.toObjectFlow(UserBoosters::class.java).catch { e ->
+            Log.e(TAG, "Failed to observe boosters for $userId", e)
+            emit(null)
         }
     }
 
     private suspend fun initializeUserBoostersIfMissing(userId: String) {
-        val docRef = db.collection("boosters").document(userId)
-        val snapshot = docRef.get().await()
+        val ref = rtdb.getReference("user_boosters").child(userId)
+        val snapshot = ref.get().await()
         if (!snapshot.exists()) {
-            val payload = mapOf(
-                "userId" to userId,
-                "multitapLevel" to 1,
-                "energyBoostLevel" to 1,
-                "energyRecoveryLevel" to 1,
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-            docRef.set(payload).await()
+            val boosters = UserBoosters(userId = userId)
+            ref.setValue(boosters).await()
         }
     }
 
     suspend fun upgradeBooster(userId: String, boosterType: String, cost: Long) {
-        val balanceRef = db.collection("user_balances").document(userId)
-        val boostersRef = db.collection("boosters").document(userId)
+        val balanceRef = rtdb.getReference("user_balances").child(userId)
+        val boostersRef = rtdb.getReference("user_boosters").child(userId)
 
-        db.runTransaction { tx ->
-            val balanceSnap = tx.get(balanceRef)
-            val currentCoins = balanceSnap.getLong("availableCoins") ?: 0L
-            if (currentCoins < cost) {
-                throw IllegalStateException("Insufficient coins for booster upgrade. Cost: $cost, Available: $currentCoins")
-            }
+        val balanceDeducted = suspendCancellableCoroutine<Boolean> { continuation ->
+            balanceRef.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val balance = currentData.getValue(UserBalance::class.java) ?: return Transaction.abort()
+                    if (balance.availableCoins < cost) {
+                        return Transaction.abort()
+                    }
+                    val newMaxEnergy = if (boosterType == "energy_boost") balance.maxEnergy + 500 else balance.maxEnergy
+                    val updated = balance.copy(
+                        availableCoins = balance.availableCoins - cost,
+                        maxEnergy = newMaxEnergy,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
 
-            val boosterSnap = tx.get(boostersRef)
-            val currentLevel = (boosterSnap.getLong(boosterType) ?: 1L).toInt()
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(committed)
+                    }
+                }
+            })
+        }
 
-            tx.update(balanceRef, "availableCoins", currentCoins - cost)
-            tx.update(boostersRef, mapOf(
-                boosterType to currentLevel + 1,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
+        if (!balanceDeducted) {
+            throw IllegalStateException("Insufficient coins to purchase booster.")
+        }
 
-            // If upgrading energy boost, also increase maxEnergy in balance
-            if (boosterType == "energyBoostLevel") {
-                val currentMax = (balanceSnap.getLong("maxEnergy") ?: 1000L).toInt()
-                tx.update(balanceRef, "maxEnergy", currentMax + 500)
-            }
-        }.await()
+        suspendCancellableCoroutine<Unit> { continuation ->
+            boostersRef.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val boosters = currentData.getValue(UserBoosters::class.java) ?: UserBoosters(userId = userId)
+                    val updated = when (boosterType) {
+                        "multitap" -> boosters.copy(multitapLevel = boosters.multitapLevel + 1, updatedAt = System.currentTimeMillis())
+                        "energy_boost" -> boosters.copy(energyBoostLevel = boosters.energyBoostLevel + 1, updatedAt = System.currentTimeMillis())
+                        "recovery" -> boosters.copy(energyRecoveryLevel = boosters.energyRecoveryLevel + 1, updatedAt = System.currentTimeMillis())
+                        else -> boosters
+                    }
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
 
-        addTransactionRecord(userId, "BOOSTER_PURCHASE", -cost, "Upgraded $boosterType to next level")
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(Unit)
+                    }
+                }
+            })
+        }
+
+        addTransactionRecord(userId, "BOOSTER_PURCHASE", -cost, "Upgraded $boosterType booster")
     }
 
     suspend fun activateTurboBoost(userId: String, durationSeconds: Long = 60L) {
-        val docRef = db.collection("boosters").document(userId)
-        val expiresAt = Timestamp(Date(System.currentTimeMillis() + durationSeconds * 1000))
-        docRef.update(mapOf(
-            "turboBoostExpiresAt" to expiresAt,
-            "updatedAt" to FieldValue.serverTimestamp()
-        )).await()
+        val expiresAt = System.currentTimeMillis() + durationSeconds * 1000L
+        val boostersRef = rtdb.getReference("user_boosters").child(userId)
+        boostersRef.updateChildren(
+            mapOf(
+                "turboBoostExpiresAt" to expiresAt,
+                "updatedAt" to System.currentTimeMillis()
+            )
+        ).await()
     }
 
     // ------------------------------------------------------------------------
-    // 4. Daily Rewards & Streak
+    // 4. Daily Check-In & Streak Rewards
     // ------------------------------------------------------------------------
     fun observeDailyCheckIn(userId: String): Flow<DailyCheckIn?> {
-        val docRef = db.collection("daily_checkins").document(userId)
-        return docRef.snapshots().map { snapshot ->
-            if (snapshot.exists()) snapshot.toObject(DailyCheckIn::class.java) else null
-        }.catch { e ->
-            handleFirestoreError(e, OperationType.GET, docRef.path)
-            throw e
+        val ref = rtdb.getReference("daily_check_ins").child(userId)
+        return ref.toObjectFlow(DailyCheckIn::class.java).catch { e ->
+            Log.e(TAG, "Failed to observe daily check-in for $userId", e)
+            emit(null)
         }
     }
 
     private suspend fun initializeDailyCheckInIfMissing(userId: String) {
-        val docRef = db.collection("daily_checkins").document(userId)
-        val snapshot = docRef.get().await()
+        val ref = rtdb.getReference("daily_check_ins").child(userId)
+        val snapshot = ref.get().await()
         if (!snapshot.exists()) {
-            val payload = mapOf(
-                "userId" to userId,
-                "currentStreak" to 0,
-                "lastCheckInDate" to "",
-                "totalClaimed" to 0
-            )
-            docRef.set(payload).await()
+            val checkIn = DailyCheckIn(userId = userId)
+            ref.setValue(checkIn).await()
         }
     }
 
     suspend fun claimDailyReward(userId: String, rewardAmount: Long): Int {
         val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        val checkInRef = db.collection("daily_checkins").document(userId)
-        val balanceRef = db.collection("user_balances").document(userId)
+        val checkInRef = rtdb.getReference("daily_check_ins").child(userId)
+        val snapshot = checkInRef.get().await()
+        val currentCheckIn = snapshot.getValue(DailyCheckIn::class.java) ?: DailyCheckIn(userId = userId)
 
-        var newStreak = 1
-        db.runTransaction { tx ->
-            val checkInSnap = tx.get(checkInRef)
-            val lastDate = checkInSnap.getString("lastCheckInDate") ?: ""
-            if (lastDate == todayStr) {
-                throw IllegalStateException("Daily reward already claimed today.")
-            }
+        if (currentCheckIn.lastCheckInDate == todayStr) {
+            throw IllegalStateException("Daily reward already claimed for today.")
+        }
 
-            val currentStreak = (checkInSnap.getLong("currentStreak") ?: 0L).toInt()
-            val totalClaimed = (checkInSnap.getLong("totalClaimed") ?: 0L).toInt()
-            newStreak = if (currentStreak >= 7) 1 else currentStreak + 1
+        val yesterdayCal = java.util.Calendar.getInstance()
+        yesterdayCal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        val yesterdayStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(yesterdayCal.time)
 
-            tx.update(checkInRef, mapOf(
-                "currentStreak" to newStreak,
-                "lastCheckInDate" to todayStr,
-                "lastClaimedAt" to FieldValue.serverTimestamp(),
-                "totalClaimed" to totalClaimed + 1
-            ))
+        val newStreak = if (currentCheckIn.lastCheckInDate == yesterdayStr) {
+            if (currentCheckIn.currentStreak >= 7) 1 else currentCheckIn.currentStreak + 1
+        } else {
+            1
+        }
 
-            val currentCoins = tx.get(balanceRef).getLong("availableCoins") ?: 0L
-            val currentLifetime = tx.get(balanceRef).getLong("totalLifetimeCoins") ?: 0L
-            tx.update(balanceRef, mapOf(
-                "availableCoins" to currentCoins + rewardAmount,
-                "totalLifetimeCoins" to currentLifetime + rewardAmount,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
-        }.await()
+        val updatedCheckIn = currentCheckIn.copy(
+            currentStreak = newStreak,
+            lastCheckInDate = todayStr,
+            lastClaimedAt = System.currentTimeMillis(),
+            totalClaimed = currentCheckIn.totalClaimed + 1
+        )
+        checkInRef.setValue(updatedCheckIn).await()
+
+        val balanceRef = rtdb.getReference("user_balances").child(userId)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            balanceRef.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
+                    val updated = balance.copy(
+                        availableCoins = balance.availableCoins + rewardAmount,
+                        totalLifetimeCoins = balance.totalLifetimeCoins + rewardAmount,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
+
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(Unit)
+                    }
+                }
+            })
+        }
 
         addTransactionRecord(userId, "DAILY_REWARD", rewardAmount, "Claimed Day $newStreak daily reward")
         return newStreak
     }
 
     // ------------------------------------------------------------------------
-    // 5. Tasks and Challenges
+    // 5. Tasks & Challenges
     // ------------------------------------------------------------------------
-    fun observeActiveTasks(): Flow<List<TaskItem>> {
-        return db.collection("tasks")
-            .whereEqualTo("isActive", true)
-            .snapshots()
-            .map { it.toObjects(TaskItem::class.java) }
+    fun observeActiveTasks(): Flow<List<TaskItem>> = callbackFlow {
+        val tasksRef = rtdb.getReference("tasks")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists() || !snapshot.hasChildren()) {
+                    seedDefaultTasks()
+                    return
+                }
+                val list = mutableListOf<TaskItem>()
+                for (child in snapshot.children) {
+                    val task = child.getValue(TaskItem::class.java)
+                    if (task != null && task.isActive) {
+                        list.add(task)
+                    }
+                }
+                trySend(list)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        tasksRef.addValueEventListener(listener)
+        awaitClose { tasksRef.removeEventListener(listener) }
+    }
+
+    private fun seedDefaultTasks() {
+        val defaults = listOf(
+            TaskItem(taskId = "TASK-01", title = "Daily Check-In", description = "Claim your daily reward streak in the app", category = "daily", rewardCoins = 500L),
+            TaskItem(taskId = "TASK-02", title = "Follow TAP on X (Twitter)", description = "Stay tuned with official announcements and drop alerts", category = "social", rewardCoins = 1500L, actionUrl = "https://x.com"),
+            TaskItem(taskId = "TASK-03", title = "Join Official Telegram Group", description = "Connect with global tappers and earn bonus coins", category = "social", rewardCoins = 2500L, actionUrl = "https://t.me"),
+            TaskItem(taskId = "TASK-04", title = "Subscribe to YouTube Channel", description = "Watch strategy guides and tutorials", category = "promotional", rewardCoins = 3000L, actionUrl = "https://youtube.com"),
+            TaskItem(taskId = "TASK-05", title = "Invite 3 Friends to TAP", description = "Share your referral code to unlock massive rewards", category = "referral", rewardCoins = 7500L),
+            TaskItem(taskId = "TASK-06", title = "Reach 5,000 Total Taps", description = "Prove your dedication as a Master Tapper", category = "special", rewardCoins = 5000L)
+        )
+        val tasksRef = rtdb.getReference("tasks")
+        for (item in defaults) {
+            tasksRef.child(item.taskId).setValue(item)
+        }
     }
 
     fun observeUserTaskSubmissions(userId: String): Flow<List<TaskSubmission>> {
-        return db.collection("task_submissions")
-            .whereEqualTo("userId", userId)
-            .snapshots()
-            .map { it.toObjects(TaskSubmission::class.java) }
+        val ref = rtdb.getReference("task_submissions").child(userId)
+        return ref.toListFlow(TaskSubmission::class.java).catch { e ->
+            Log.e(TAG, "Failed to observe submissions for $userId", e)
+            emit(emptyList())
+        }
     }
 
     suspend fun completeAndClaimTask(userId: String, task: TaskItem) {
-        val subId = "${userId}_${task.taskId}"
-        val subRef = db.collection("task_submissions").document(subId)
-        val balanceRef = db.collection("user_balances").document(userId)
-
-        db.runTransaction { tx ->
-            val subSnap = tx.get(subRef)
-            if (subSnap.exists() && subSnap.getBoolean("rewardClaimed") == true) {
+        val submissionRef = rtdb.getReference("task_submissions").child(userId).child(task.taskId)
+        val existing = submissionRef.get().await()
+        if (existing.exists()) {
+            val sub = existing.getValue(TaskSubmission::class.java)
+            if (sub?.rewardClaimed == true) {
                 throw IllegalStateException("Task reward has already been claimed.")
             }
+        }
 
-            tx.set(subRef, mapOf(
-                "submissionId" to subId,
-                "userId" to userId,
-                "taskId" to task.taskId,
-                "status" to "claimed",
-                "rewardClaimed" to true,
-                "completedAt" to FieldValue.serverTimestamp()
-            ), SetOptions.merge())
+        val submission = TaskSubmission(
+            submissionId = task.taskId,
+            userId = userId,
+            taskId = task.taskId,
+            status = "claimed",
+            rewardClaimed = true,
+            completedAt = System.currentTimeMillis()
+        )
+        submissionRef.setValue(submission).await()
 
-            val currentCoins = tx.get(balanceRef).getLong("availableCoins") ?: 0L
-            val currentLifetime = tx.get(balanceRef).getLong("totalLifetimeCoins") ?: 0L
-            tx.update(balanceRef, mapOf(
-                "availableCoins" to currentCoins + task.rewardCoins,
-                "totalLifetimeCoins" to currentLifetime + task.rewardCoins,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
-        }.await()
+        val balanceRef = rtdb.getReference("user_balances").child(userId)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            balanceRef.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
+                    val updated = balance.copy(
+                        availableCoins = balance.availableCoins + task.rewardCoins,
+                        totalLifetimeCoins = balance.totalLifetimeCoins + task.rewardCoins,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
+
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(Unit)
+                    }
+                }
+            })
+        }
 
         addTransactionRecord(userId, "TASK_REWARD", task.rewardCoins, "Completed task: ${task.title}")
     }
@@ -372,186 +616,297 @@ class TapRepository(private val db: FirebaseFirestore) {
     // ------------------------------------------------------------------------
     // 6. Wallet & Withdrawals
     // ------------------------------------------------------------------------
-    fun observeUserWithdrawals(userId: String): Flow<List<WithdrawalRequest>> {
-        return db.collection("withdrawals")
-            .whereEqualTo("userId", userId)
-            .snapshots()
-            .map { it.toObjects(WithdrawalRequest::class.java).sortedByDescending { req -> req.createdAt } }
+    fun observeUserWithdrawals(userId: String): Flow<List<WithdrawalRequest>> = callbackFlow {
+        val ref = rtdb.getReference("withdrawals")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val list = mutableListOf<WithdrawalRequest>()
+                for (child in snapshot.children) {
+                    val req = child.getValue(WithdrawalRequest::class.java)
+                    if (req != null && req.userId == userId) {
+                        list.add(req)
+                    }
+                }
+                list.sortByDescending { it.createdAt }
+                trySend(list)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
     }
 
     suspend fun submitWithdrawalRequest(
         userId: String,
         username: String,
         coinAmount: Long,
-        fiatAmount: Double,
-        method: String,
-        details: String
-    ): String {
-        val balanceRef = db.collection("user_balances").document(userId)
+        paymentMethod: String,
+        paymentDetails: String
+    ): WithdrawalRequest {
+        val configSnap = rtdb.getReference("app_config").child("main").get().await()
+        val config = configSnap.getValue(AppConfiguration::class.java) ?: AppConfiguration()
+
+        if (coinAmount < config.minWithdrawalCoins) {
+            throw IllegalArgumentException("Minimum withdrawal is ${config.minWithdrawalCoins} coins.")
+        }
+
+        val balanceRef = rtdb.getReference("user_balances").child(userId)
+        val deducted = suspendCancellableCoroutine<Boolean> { continuation ->
+            balanceRef.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val balance = currentData.getValue(UserBalance::class.java) ?: return Transaction.abort()
+                    if (balance.availableCoins < coinAmount) {
+                        return Transaction.abort()
+                    }
+                    val updated = balance.copy(
+                        availableCoins = balance.availableCoins - coinAmount,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
+
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(committed)
+                    }
+                }
+            })
+        }
+
+        if (!deducted) {
+            throw IllegalStateException("Insufficient coin balance for withdrawal.")
+        }
+
         val withdrawalId = "WD-" + UUID.randomUUID().toString().take(8).uppercase()
-        val withdrawalRef = db.collection("withdrawals").document(withdrawalId)
+        val fiatValue = coinAmount * config.coinToUsdRate
+        val request = WithdrawalRequest(
+            withdrawalId = withdrawalId,
+            userId = userId,
+            username = username,
+            coinAmount = coinAmount,
+            fiatAmount = fiatValue,
+            paymentMethod = paymentMethod,
+            paymentDetails = paymentDetails,
+            status = "PENDING",
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
+        )
 
-        db.runTransaction { tx ->
-            val balanceSnap = tx.get(balanceRef)
-            val currentCoins = balanceSnap.getLong("availableCoins") ?: 0L
-            if (currentCoins < coinAmount) {
-                throw IllegalStateException("Insufficient coin balance for withdrawal. Needed: $coinAmount, Available: $currentCoins")
-            }
+        rtdb.getReference("withdrawals").child(withdrawalId).setValue(request).await()
+        addTransactionRecord(userId, "WITHDRAWAL", -coinAmount, "Withdrawal request via $paymentMethod")
 
-            tx.update(balanceRef, mapOf(
-                "availableCoins" to currentCoins - coinAmount,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
-
-            tx.set(withdrawalRef, mapOf(
-                "withdrawalId" to withdrawalId,
-                "userId" to userId,
-                "username" to username,
-                "coinAmount" to coinAmount,
-                "fiatAmount" to fiatAmount,
-                "paymentMethod" to method,
-                "paymentDetails" to details,
-                "status" to "PENDING",
-                "transactionReference" to "REF-${System.currentTimeMillis().toString().takeLast(6)}",
-                "createdAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
-        }.await()
-
-        addTransactionRecord(userId, "WITHDRAWAL", -coinAmount, "Submitted withdrawal $withdrawalId via $method")
-        return withdrawalId
+        return request
     }
 
     // ------------------------------------------------------------------------
-    // 7. Transaction History
+    // 7. Transactions Ledger
     // ------------------------------------------------------------------------
-    fun observeTransactions(userId: String): Flow<List<TransactionRecord>> {
-        return db.collection("users").document(userId).collection("transactions")
-            .snapshots()
-            .map { it.toObjects(TransactionRecord::class.java).sortedByDescending { tx -> tx.createdAt } }
+    fun observeTransactions(userId: String): Flow<List<TransactionRecord>> = callbackFlow {
+        val ref = rtdb.getReference("transactions").child(userId)
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val list = mutableListOf<TransactionRecord>()
+                for (child in snapshot.children) {
+                    child.getValue(TransactionRecord::class.java)?.let { list.add(it) }
+                }
+                list.sortByDescending { it.createdAt }
+                trySend(list)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
     }
 
     private suspend fun addTransactionRecord(userId: String, type: String, amount: Long, description: String) {
-        val txId = "TX-" + UUID.randomUUID().toString().take(8)
-        val docRef = db.collection("users").document(userId).collection("transactions").document(txId)
-        docRef.set(mapOf(
-            "txId" to txId,
-            "userId" to userId,
-            "type" to type,
-            "amount" to amount,
-            "description" to description,
-            "createdAt" to FieldValue.serverTimestamp()
-        )).await()
+        val txId = "TX-" + UUID.randomUUID().toString().take(10).uppercase()
+        val record = TransactionRecord(
+            txId = txId,
+            userId = userId,
+            type = type,
+            amount = amount,
+            description = description,
+            createdAt = System.currentTimeMillis()
+        )
+        rtdb.getReference("transactions").child(userId).child(txId).setValue(record).await()
     }
 
     // ------------------------------------------------------------------------
-    // 8. Remote App Configuration (Authoritative live sync)
+    // 8. Remote App Configuration (Synced live without APK rebuilds)
     // ------------------------------------------------------------------------
-    fun observeAppConfiguration(): Flow<AppConfiguration> {
-        val docRef = db.collection("app_configuration").document("main")
-        return docRef.snapshots().map { snapshot ->
-            if (snapshot.exists()) {
-                snapshot.toObject(AppConfiguration::class.java) ?: AppConfiguration()
-            } else {
-                AppConfiguration()
+    fun observeAppConfiguration(): Flow<AppConfiguration> = callbackFlow {
+        val configRef = rtdb.getReference("app_config").child("main")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists()) {
+                    val defaultConfig = AppConfiguration()
+                    configRef.setValue(defaultConfig)
+                    trySend(defaultConfig)
+                } else {
+                    val config = snapshot.getValue(AppConfiguration::class.java) ?: AppConfiguration()
+                    trySend(config)
+                }
             }
-        }.catch { e ->
-            Log.w(TAG, "Failed to observe app configuration, falling back to default", e)
-            emit(AppConfiguration())
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.w(TAG, "Config load error: ${error.message}")
+                trySend(AppConfiguration())
+            }
         }
+        configRef.addValueEventListener(listener)
+        awaitClose { configRef.removeEventListener(listener) }
     }
 
     suspend fun saveAppConfiguration(config: AppConfiguration) {
-        val docRef = db.collection("app_configuration").document("main")
-        docRef.set(mapOf(
-            "configId" to "main",
-            "coinsPerTap" to config.coinsPerTap,
-            "maxEnergy" to config.maxEnergy,
-            "energyPerTap" to config.energyPerTap,
-            "energyRegenPerSec" to config.energyRegenPerSec,
-            "minWithdrawalCoins" to config.minWithdrawalCoins,
-            "coinToUsdRate" to config.coinToUsdRate,
-            "maintenanceMode" to config.maintenanceMode,
-            "bannerNotice" to config.bannerNotice,
-            "announcementActive" to config.announcementActive,
-            "announcementTitle" to config.announcementTitle,
-            "announcementBody" to config.announcementBody,
-            "announcementLink" to config.announcementLink,
-            "version" to config.version + 1,
-            "updatedAt" to FieldValue.serverTimestamp()
-        ), SetOptions.merge()).await()
+        val updated = config.copy(
+            version = config.version + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        rtdb.getReference("app_config").child("main").setValue(updated).await()
     }
 
     // ------------------------------------------------------------------------
     // 9. Admin Dashboard Management Operations
     // ------------------------------------------------------------------------
     fun observeAllUsers(): Flow<List<UserProfile>> {
-        return db.collection("users")
-            .snapshots()
-            .map { it.toObjects(UserProfile::class.java) }
+        val ref = rtdb.getReference("users")
+        return ref.toListFlow(UserProfile::class.java)
     }
 
-    fun observeAllWithdrawals(): Flow<List<WithdrawalRequest>> {
-        return db.collection("withdrawals")
-            .snapshots()
-            .map { it.toObjects(WithdrawalRequest::class.java).sortedByDescending { it.createdAt } }
+    fun observeAllWithdrawals(): Flow<List<WithdrawalRequest>> = callbackFlow {
+        val ref = rtdb.getReference("withdrawals")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val list = mutableListOf<WithdrawalRequest>()
+                for (child in snapshot.children) {
+                    child.getValue(WithdrawalRequest::class.java)?.let { list.add(it) }
+                }
+                list.sortByDescending { it.createdAt }
+                trySend(list)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
     }
 
     suspend fun reviewWithdrawal(withdrawalId: String, newStatus: String, adminNote: String?) {
-        val docRef = db.collection("withdrawals").document(withdrawalId)
-        docRef.update(mapOf(
-            "status" to newStatus,
-            "adminNote" to (adminNote ?: ""),
-            "updatedAt" to FieldValue.serverTimestamp()
-        )).await()
+        val ref = rtdb.getReference("withdrawals").child(withdrawalId)
+        val snap = ref.get().await()
+        val req = snap.getValue(WithdrawalRequest::class.java) ?: return
+
+        ref.updateChildren(
+            mapOf(
+                "status" to newStatus,
+                "adminNote" to (adminNote ?: ""),
+                "updatedAt" to System.currentTimeMillis()
+            )
+        ).await()
+
+        if (newStatus == "REJECTED" && req.status != "REJECTED") {
+            val balanceRef = rtdb.getReference("user_balances").child(req.userId)
+            suspendCancellableCoroutine<Unit> { continuation ->
+                balanceRef.runTransaction(object : Transaction.Handler {
+                    override fun doTransaction(currentData: MutableData): Transaction.Result {
+                        val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = req.userId)
+                        val updated = balance.copy(
+                            availableCoins = balance.availableCoins + req.coinAmount,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        currentData.value = updated
+                        return Transaction.success(currentData)
+                    }
+
+                    override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                        if (error != null) {
+                            continuation.resumeWithException(error.toException())
+                        } else {
+                            continuation.resume(Unit)
+                        }
+                    }
+                })
+            }
+            addTransactionRecord(req.userId, "REFUND", req.coinAmount, "Withdrawal refund: ${adminNote ?: "Rejected by admin"}")
+        }
     }
 
     suspend fun adminAdjustUserBalance(userId: String, adjustment: Long, reason: String) {
-        val balanceRef = db.collection("user_balances").document(userId)
-        db.runTransaction { tx ->
-            val snap = tx.get(balanceRef)
-            val currentCoins = snap.getLong("availableCoins") ?: 0L
-            val newCoins = (currentCoins + adjustment).coerceAtLeast(0L)
-            tx.update(balanceRef, mapOf(
-                "availableCoins" to newCoins,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ))
-        }.await()
+        val balanceRef = rtdb.getReference("user_balances").child(userId)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            balanceRef.runTransaction(object : Transaction.Handler {
+                override fun doTransaction(currentData: MutableData): Transaction.Result {
+                    val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
+                    val newCoins = (balance.availableCoins + adjustment).coerceAtLeast(0L)
+                    val updated = balance.copy(
+                        availableCoins = newCoins,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    currentData.value = updated
+                    return Transaction.success(currentData)
+                }
 
+                override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                    if (error != null) {
+                        continuation.resumeWithException(error.toException())
+                    } else {
+                        continuation.resume(Unit)
+                    }
+                }
+            })
+        }
         addTransactionRecord(userId, "ADMIN_ADJUSTMENT", adjustment, "Admin adjustment: $reason")
     }
 
     suspend fun adminToggleUserSuspension(userId: String, isSuspended: Boolean) {
-        val docRef = db.collection("users").document(userId)
-        docRef.update(mapOf(
-            "isSuspended" to isSuspended,
-            "updatedAt" to FieldValue.serverTimestamp()
-        )).await()
+        rtdb.getReference("users").child(userId).updateChildren(
+            mapOf(
+                "isSuspended" to isSuspended,
+                "updatedAt" to System.currentTimeMillis()
+            )
+        ).await()
     }
 
     suspend fun adminCreateOrUpdateTask(task: TaskItem) {
         val taskId = task.taskId.ifBlank { "TASK-" + UUID.randomUUID().toString().take(6).uppercase() }
-        val docRef = db.collection("tasks").document(taskId)
-        docRef.set(mapOf(
-            "taskId" to taskId,
-            "title" to task.title,
-            "description" to task.description,
-            "category" to task.category,
-            "rewardCoins" to task.rewardCoins,
-            "actionUrl" to task.actionUrl,
-            "isActive" to task.isActive,
-            "createdAt" to FieldValue.serverTimestamp()
-        ), SetOptions.merge()).await()
+        val item = task.copy(taskId = taskId, createdAt = if (task.createdAt > 0L) task.createdAt else System.currentTimeMillis())
+        rtdb.getReference("tasks").child(taskId).setValue(item).await()
     }
 
     // ------------------------------------------------------------------------
     // 10. Leaderboard (Live rankings)
     // ------------------------------------------------------------------------
-    fun observeLeaderboard(): Flow<List<UserBalance>> {
-        return db.collection("user_balances")
-            .orderBy("totalLifetimeCoins", Query.Direction.DESCENDING)
-            .limit(50)
-            .snapshots()
-            .map { it.toObjects(UserBalance::class.java) }
+    fun observeLeaderboard(): Flow<List<UserBalance>> = callbackFlow {
+        val query = rtdb.getReference("user_balances")
+            .orderByChild("totalLifetimeCoins")
+            .limitToLast(50)
+
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val list = mutableListOf<UserBalance>()
+                for (child in snapshot.children) {
+                    child.getValue(UserBalance::class.java)?.let { list.add(it) }
+                }
+                list.sortByDescending { it.totalLifetimeCoins }
+                trySend(list)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        query.addValueEventListener(listener)
+        awaitClose { query.removeEventListener(listener) }
     }
 }

@@ -1,9 +1,6 @@
 package com.example.data.model
 
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
+import com.google.firebase.database.IgnoreExtraProperties
 
 @IgnoreExtraProperties
 data class AppConfiguration(
@@ -21,7 +18,7 @@ data class AppConfiguration(
     val announcementBody: String = "",
     val announcementLink: String = "",
     val version: Int = 1,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @IgnoreExtraProperties
@@ -32,5 +29,5 @@ data class NotificationItem(
     val message: String = "",
     val type: String = "SYSTEM", // SYSTEM, TASK, WITHDRAWAL, REWARD, PROMO
     val isRead: Boolean = false,
-    @ServerTimestamp val createdAt: Timestamp? = null
+    val createdAt: Long = System.currentTimeMillis()
 )

@@ -1,9 +1,6 @@
 package com.example.data.model
 
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
+import com.google.firebase.database.IgnoreExtraProperties
 
 enum class PaymentMethod(val key: String, val displayName: String, val hint: String) {
     USDT_TON("USDT_TON", "USDT (TON / TRC20)", "Enter your USDT wallet address"),
@@ -31,8 +28,8 @@ data class WithdrawalRequest(
     val status: String = "PENDING",
     val adminNote: String? = null,
     val transactionReference: String = "",
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @IgnoreExtraProperties
@@ -42,5 +39,5 @@ data class TransactionRecord(
     val type: String = "TAP_EARNING", // TAP_EARNING, BOOSTER_PURCHASE, DAILY_REWARD, TASK_REWARD, REFERRAL_BONUS, WITHDRAWAL, ADMIN_ADJUSTMENT
     val amount: Long = 0L, // Positive for gains, negative for spent
     val description: String = "",
-    @ServerTimestamp val createdAt: Timestamp? = null
+    val createdAt: Long = System.currentTimeMillis()
 )

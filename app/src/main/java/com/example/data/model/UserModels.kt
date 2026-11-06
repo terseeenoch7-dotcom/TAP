@@ -1,9 +1,6 @@
 package com.example.data.model
 
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
+import com.google.firebase.database.IgnoreExtraProperties
 
 @IgnoreExtraProperties
 data class UserProfile(
@@ -16,8 +13,8 @@ data class UserProfile(
     val accountLevel: Int = 1,
     val isSuspended: Boolean = false,
     val role: String = "user",
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @IgnoreExtraProperties
@@ -28,8 +25,8 @@ data class UserBalance(
     val totalTaps: Long = 0L,
     val currentEnergy: Int = 1000,
     val maxEnergy: Int = 1000,
-    @ServerTimestamp val lastEnergyUpdatedAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val lastEnergyUpdatedAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @IgnoreExtraProperties
@@ -38,9 +35,9 @@ data class UserBoosters(
     val multitapLevel: Int = 1,
     val energyBoostLevel: Int = 1,
     val energyRecoveryLevel: Int = 1,
-    val turboBoostExpiresAt: Timestamp? = null,
-    val autoTapExpiresAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
+    val turboBoostExpiresAt: Long? = null,
+    val autoTapExpiresAt: Long? = null,
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @IgnoreExtraProperties
@@ -48,6 +45,7 @@ data class DailyCheckIn(
     val userId: String = "",
     val currentStreak: Int = 0,
     val lastCheckInDate: String = "",
-    @ServerTimestamp val lastClaimedAt: Timestamp? = null,
+    val lastClaimedAt: Long = 0L,
     val totalClaimed: Int = 0
 )
+

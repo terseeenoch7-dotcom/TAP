@@ -3,6 +3,7 @@ package com.example.ui
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import android.util.Patterns
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
@@ -17,8 +18,11 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,6 +60,12 @@ class AuthViewModel : ViewModel() {
         auth.addAuthStateListener(authStateListener)
     }
 
+    fun clearError() {
+        if (_uiState.value is AuthUiState.Error) {
+            _uiState.value = AuthUiState.Unauthenticated
+        }
+    }
+
     fun attemptAutoSignIn(context: Context) {
         if (auth.currentUser != null) {
             _uiState.value = AuthUiState.Authenticated(auth.currentUser!!)
@@ -90,7 +100,6 @@ class AuthViewModel : ViewModel() {
                     auth.signInWithCredential(authCred).await()
                 }
             } catch (e: Exception) {
-                // Auto sign-in failed silently; user will sign in interactively
                 Log.d(TAG, "Silent auto sign-in unfulfilled: ${e.message}")
             }
         }
@@ -131,6 +140,81 @@ class AuthViewModel : ViewModel() {
             } catch (e: Exception) {
                 Log.e(TAG, "Google Sign-In failed", e)
                 _uiState.value = AuthUiState.Error(e.localizedMessage ?: "Sign-in failed")
+            }
+        }
+    }
+
+    fun signInWithEmail(email: String, password: String) {
+        val trimmedEmail = email.trim()
+        if (trimmedEmail.isBlank() || !Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+            _uiState.value = AuthUiState.Error("Please enter a valid email address.")
+            return
+        }
+        if (password.length < 6) {
+            _uiState.value = AuthUiState.Error("Password must be at least 6 characters.")
+            return
+        }
+
+        _uiState.value = AuthUiState.Loading
+        viewModelScope.launch {
+            try {
+                val result = auth.signInWithEmailAndPassword(trimmedEmail, password).await()
+                val user = result.user
+                if (user != null) {
+                    _uiState.value = AuthUiState.Authenticated(user)
+                } else {
+                    _uiState.value = AuthUiState.Error("Sign-in succeeded but user session could not be established.")
+                }
+            } catch (e: FirebaseAuthInvalidCredentialsException) {
+                _uiState.value = AuthUiState.Error("Invalid email or password. Please check your credentials.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Email sign-in failed", e)
+                _uiState.value = AuthUiState.Error(e.localizedMessage ?: "Sign-in failed. Please try again.")
+            }
+        }
+    }
+
+    fun signUpWithEmail(email: String, password: String, username: String) {
+        val trimmedEmail = email.trim()
+        val trimmedUsername = username.trim()
+
+        if (trimmedUsername.length < 2) {
+            _uiState.value = AuthUiState.Error("Username must be at least 2 characters.")
+            return
+        }
+        if (trimmedEmail.isBlank() || !Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+            _uiState.value = AuthUiState.Error("Please enter a valid email address.")
+            return
+        }
+        if (password.length < 6) {
+            _uiState.value = AuthUiState.Error("Password must be at least 6 characters.")
+            return
+        }
+
+        _uiState.value = AuthUiState.Loading
+        viewModelScope.launch {
+            try {
+                val result = auth.createUserWithEmailAndPassword(trimmedEmail, password).await()
+                val user = result.user
+                if (user != null) {
+                    // Update user profile display name
+                    try {
+                        val profileUpdates = UserProfileChangeRequest.Builder()
+                            .setDisplayName(trimmedUsername)
+                            .build()
+                        user.updateProfile(profileUpdates).await()
+                    } catch (pe: Exception) {
+                        Log.w(TAG, "Failed to set display name on FirebaseUser", pe)
+                    }
+                    _uiState.value = AuthUiState.Authenticated(user)
+                } else {
+                    _uiState.value = AuthUiState.Error("Account creation succeeded but user session is empty.")
+                }
+            } catch (e: FirebaseAuthUserCollisionException) {
+                _uiState.value = AuthUiState.Error("An account with this email already exists. Please sign in.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Email sign-up failed", e)
+                _uiState.value = AuthUiState.Error(e.localizedMessage ?: "Account creation failed. Please try again.")
             }
         }
     }

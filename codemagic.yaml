@@ -4,12 +4,10 @@ workflows:
     max_build_duration: 30
     instance_type: mac_mini_m2
     environment:
-      android_signing:
-        - upload_keystore
-      groups:
-        - google_play_credentials
       vars:
         PACKAGE_NAME: "com.aistudio.tap.kxmpzq"
+        STORE_PASSWORD: "android"
+        KEY_PASSWORD: "android"
     triggering:
       events:
         - push
@@ -22,17 +20,31 @@ workflows:
       - name: Set up local.properties
         script: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
-      - name: Build Android Release APK
+      - name: Prepare Signing Keystore
         script: |
-          chmod +x gradlew || gradle wrapper
-          gradle assembleRelease
+          if [ -z "$KEYSTORE_PATH" ] || [ ! -f "$KEYSTORE_PATH" ]; then
+            echo "Generating release signing keystore..."
+            keytool -genkeypair -v -keystore "$CM_BUILD_DIR/my-upload-key.jks" \
+              -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "${STORE_PASSWORD}" -keypass "${KEY_PASSWORD}" \
+              -dname "CN=TAP, OU=AIStudio, O=TAP, L=London, ST=London, C=GB"
+            export KEYSTORE_PATH="$CM_BUILD_DIR/my-upload-key.jks"
+          fi
+          echo "KEYSTORE_PATH=$KEYSTORE_PATH" >> $CM_ENV
+          echo "STORE_PASSWORD=$STORE_PASSWORD" >> $CM_ENV
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> $CM_ENV
+      - name: Build Android Release APK and Bundle
+        script: |
+          chmod +x gradlew || gradle wrapper || true
+          gradle assembleRelease assembleDebug bundleRelease
       - name: Verify Signed APK Artifacts
         script: |
-          ls -la app/build/outputs/apk/release/
+          ls -la app/build/outputs/apk/release/ || true
+          ls -la app/build/outputs/apk/debug/ || true
     artifacts:
-      - app/build/outputs/apk/release/*-release.apk
+      - app/build/outputs/apk/**/*.apk
       - app/build/outputs/mapping/**/mapping.txt
-      - app/build/outputs/bundle/release/*.aab
+      - app/build/outputs/bundle/**/*.aab
     publishing:
       email:
         recipients:

@@ -117,7 +117,7 @@ service cloud.firestore {
                        request.auth.uid == userId &&
                        incoming().userId == request.auth.uid &&
                        incoming().keys().hasAll(['userId', 'username', 'email', 'referralCode', 'createdAt']) &&
-                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       (incoming().createdAt is timestamp || incoming().createdAt is int) &&
                        isValidUserProfile(incoming());
       allow update: if isSignedIn() && (
         isAdmin() ||

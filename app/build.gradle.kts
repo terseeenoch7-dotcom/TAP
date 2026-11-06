@@ -1,5 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.time.Duration
+import java.nio.file.Files
 
 plugins {
   alias(libs.plugins.android.application)
@@ -110,6 +111,8 @@ dependencies {
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   implementation(libs.firebase.firestore)
+  implementation(libs.firebase.database)
+  implementation(libs.firebase.analytics)
   implementation(libs.firebase.auth)
   implementation(libs.androidx.credentials)
   implementation(libs.androidx.credentials.play.services)
@@ -140,10 +143,24 @@ dependencies {
   "ksp"(libs.moshi.kotlin.codegen)
 }
 
+val robolectricDir = File("${layout.buildDirectory.get().asFile.absolutePath}/robolectric-jars")
+robolectricDir.mkdirs()
+val sourceRobolectricJar = File("/home/appuser/.m2/repository/org/robolectric/android-all-instrumented/16-robolectric-13921718-i7/android-all-instrumented-16-robolectric-13921718-i7.jar")
+if (sourceRobolectricJar.exists()) {
+  val target1 = File(robolectricDir, "android-all-16-robolectric-13921718-i7.jar")
+  if (!target1.exists()) {
+    try { Files.createSymbolicLink(target1.toPath(), sourceRobolectricJar.toPath()) } catch (_: Exception) {}
+  }
+  val target2 = File(robolectricDir, "android-all-instrumented-16-robolectric-13921718-i7.jar")
+  if (!target2.exists()) {
+    try { Files.createSymbolicLink(target2.toPath(), sourceRobolectricJar.toPath()) } catch (_: Exception) {}
+  }
+}
+
 tasks.withType<Test> {
   failFast = true
   timeout.set(Duration.ofMinutes(2))
-  systemProperty("robolectric.dependency.dir", "/home/appuser/robolectric-jars")
+  systemProperty("robolectric.dependency.dir", robolectricDir.absolutePath)
   systemProperty("robolectric.offline", "true")
   testLogging {
     events("passed", "failed", "skipped")

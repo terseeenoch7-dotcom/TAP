@@ -5,10 +5,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Bolt
@@ -24,13 +35,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -42,7 +53,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.google.firebase.auth.FirebaseUser
 import com.example.data.repository.TapRepository
 import com.example.ui.AuthScreen
 import com.example.ui.AuthUiState
@@ -58,19 +68,14 @@ import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.TasksScreen
 import com.example.ui.screens.WalletScreen
 import com.example.ui.theme.TAPTheme
-import com.example.ui.theme.TapBlack
 import com.example.ui.theme.TapDarkCharcoal
-import com.example.ui.theme.TapGoldContainer
 import com.example.ui.theme.TapGoldPrimary
-import com.example.ui.theme.TapOutline
 import com.example.ui.theme.TapTextMuted
-import com.example.ui.theme.TapTextSecondary
+import com.example.util.AnalyticsHelper
 import com.example.util.AudioHapticHelper
+import com.example.util.NetworkMonitor
 import com.example.util.configureAppCheck
-import com.google.firebase.Firebase
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.auth.FirebaseUser
 
 enum class TapScreen(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
@@ -85,19 +90,24 @@ enum class TapScreen(val label: String, val icon: ImageVector) {
 class MainActivity : ComponentActivity() {
 
     private lateinit var audioHapticHelper: AudioHapticHelper
+    private lateinit var analyticsHelper: AnalyticsHelper
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // MANDATORY: Step 1. Configure App Check with launch intent before any UI, ViewModels, or Firebase calls
+        // Configure App Check before any Firebase calls
         configureAppCheck(this, intent)
 
         enableEdgeToEdge()
         audioHapticHelper = AudioHapticHelper(this)
+        analyticsHelper = AnalyticsHelper(this)
 
         setContent {
             TAPTheme {
-                TapAppRoot(audioHapticHelper = audioHapticHelper)
+                TapAppRoot(
+                    audioHapticHelper = audioHapticHelper,
+                    analyticsHelper = analyticsHelper
+                )
             }
         }
     }
@@ -109,7 +119,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun TapAppRoot(audioHapticHelper: AudioHapticHelper) {
+fun TapAppRoot(
+    audioHapticHelper: AudioHapticHelper,
+    analyticsHelper: AnalyticsHelper
+) {
     val context = LocalContext.current
     val authViewModel: AuthViewModel = viewModel()
     val authState by authViewModel.uiState.collectAsState()
@@ -120,16 +133,34 @@ fun TapAppRoot(audioHapticHelper: AudioHapticHelper) {
 
     when (val state = authState) {
         is AuthUiState.Authenticated -> {
+            LaunchedEffect(state.user.uid) {
+                analyticsHelper.logLogin(state.user.providerData.firstOrNull()?.providerId ?: "password")
+            }
             AuthenticatedApp(
                 user = state.user,
                 audioHapticHelper = audioHapticHelper,
+                analyticsHelper = analyticsHelper,
                 onSignOut = { authViewModel.signOut(context) }
             )
         }
         else -> {
             AuthScreen(
                 authState = state,
-                onSignInClick = { authViewModel.signInWithGoogle(context) }
+                onGoogleSignInClick = {
+                    analyticsHelper.logLogin("google")
+                    authViewModel.signInWithGoogle(context)
+                },
+                onEmailSignInClick = { email, password ->
+                    analyticsHelper.logLogin("password")
+                    authViewModel.signInWithEmail(email, password)
+                },
+                onEmailSignUpClick = { email, password, username ->
+                    analyticsHelper.logSignUp("password")
+                    authViewModel.signUpWithEmail(email, password, username)
+                },
+                onClearError = {
+                    authViewModel.clearError()
+                }
             )
         }
     }
@@ -137,21 +168,23 @@ fun TapAppRoot(audioHapticHelper: AudioHapticHelper) {
 
 @Composable
 fun AuthenticatedApp(
-    user: com.google.firebase.auth.FirebaseUser,
+    user: FirebaseUser,
     audioHapticHelper: AudioHapticHelper,
+    analyticsHelper: AnalyticsHelper,
     onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
-    val databaseId = context.getString(R.string.firestore_database_id)
-    val firestore = remember(databaseId) { FirebaseFirestore.getInstance(databaseId) }
-    val repository = remember(firestore) { TapRepository(firestore) }
+    val repository = remember { TapRepository(context) }
+    val networkMonitor = remember(repository) { NetworkMonitor(context, repository.database) }
+    val isOnline by networkMonitor.isOnline.collectAsState()
 
     val tapViewModel: TapViewModel = viewModel(
         key = user.uid,
-        factory = androidx.lifecycle.viewmodel.viewModelFactory {
+        factory = viewModelFactory {
             initializer {
                 TapViewModel(
                     repository = repository,
+                    analyticsHelper = analyticsHelper,
                     currentUserId = user.uid,
                     userEmail = user.email.orEmpty(),
                     displayName = user.displayName ?: "Tapper",
@@ -161,8 +194,17 @@ fun AuthenticatedApp(
         }
     )
 
+    // Sync network state into ViewModel
+    LaunchedEffect(isOnline) {
+        tapViewModel.setOnlineStatus(isOnline)
+    }
+
     val uiState by tapViewModel.uiState.collectAsState()
     var currentScreen by remember { mutableStateOf(TapScreen.HOME) }
+
+    LaunchedEffect(currentScreen) {
+        analyticsHelper.logScreenView(currentScreen.name)
+    }
 
     var showAiCoinDialog by remember { mutableStateOf(false) }
     var showAiStrategistDialog by remember { mutableStateOf(false) }
@@ -221,48 +263,83 @@ fun AuthenticatedApp(
             }
         }
     ) { innerPadding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            when (currentScreen) {
-                TapScreen.HOME -> HomeScreen(
-                    uiState = uiState,
-                    viewModel = tapViewModel,
-                    audioHapticHelper = audioHapticHelper,
-                    onNavigateToTasks = { currentScreen = TapScreen.TASKS },
-                    onNavigateToBoosters = { currentScreen = TapScreen.BOOSTERS },
-                    onOpenAiStrategist = { showAiStrategistDialog = true }
-                )
-                TapScreen.BOOSTERS -> BoostersScreen(
-                    uiState = uiState,
-                    viewModel = tapViewModel
-                )
-                TapScreen.TASKS -> TasksScreen(
-                    uiState = uiState,
-                    viewModel = tapViewModel
-                )
-                TapScreen.WALLET -> WalletScreen(
-                    uiState = uiState,
-                    viewModel = tapViewModel
-                )
-                TapScreen.LEADERBOARD -> LeaderboardScreen(
-                    uiState = uiState,
-                    currentUserId = user.uid
-                )
-                TapScreen.PROFILE -> ProfileScreen(
-                    uiState = uiState,
-                    audioHapticHelper = audioHapticHelper,
-                    onOpenAiCoinStudio = { showAiCoinDialog = true },
-                    onOpenAdminDashboard = { currentScreen = TapScreen.ADMIN },
-                    onSignOutClick = onSignOut
-                )
-                TapScreen.ADMIN -> AdminScreen(
-                    uiState = uiState,
-                    viewModel = tapViewModel,
-                    onBackClick = { currentScreen = TapScreen.PROFILE }
-                )
+            // Online-first Network Status Banner
+            AnimatedVisibility(
+                visible = !isOnline,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Surface(
+                    color = Color(0xFF4A1015),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("offline_network_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(Color(0xFFFF5252), CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Offline Mode - Reconnecting to TAP real-time network...",
+                            color = Color(0xFFFFCDD2),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                when (currentScreen) {
+                    TapScreen.HOME -> HomeScreen(
+                        uiState = uiState,
+                        viewModel = tapViewModel,
+                        audioHapticHelper = audioHapticHelper,
+                        onNavigateToTasks = { currentScreen = TapScreen.TASKS },
+                        onNavigateToBoosters = { currentScreen = TapScreen.BOOSTERS },
+                        onOpenAiStrategist = { showAiStrategistDialog = true }
+                    )
+                    TapScreen.BOOSTERS -> BoostersScreen(
+                        uiState = uiState,
+                        viewModel = tapViewModel
+                    )
+                    TapScreen.TASKS -> TasksScreen(
+                        uiState = uiState,
+                        viewModel = tapViewModel
+                    )
+                    TapScreen.WALLET -> WalletScreen(
+                        uiState = uiState,
+                        viewModel = tapViewModel
+                    )
+                    TapScreen.LEADERBOARD -> LeaderboardScreen(
+                        uiState = uiState,
+                        currentUserId = user.uid
+                    )
+                    TapScreen.PROFILE -> ProfileScreen(
+                        uiState = uiState,
+                        audioHapticHelper = audioHapticHelper,
+                        onOpenAiCoinStudio = { showAiCoinDialog = true },
+                        onOpenAdminDashboard = { currentScreen = TapScreen.ADMIN },
+                        onSignOutClick = onSignOut
+                    )
+                    TapScreen.ADMIN -> AdminScreen(
+                        uiState = uiState,
+                        viewModel = tapViewModel,
+                        onBackClick = { currentScreen = TapScreen.PROFILE }
+                    )
+                }
             }
         }
     }

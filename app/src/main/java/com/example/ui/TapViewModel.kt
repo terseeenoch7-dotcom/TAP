@@ -15,13 +15,12 @@ import com.example.data.model.UserProfile
 import com.example.data.model.WithdrawalRequest
 import com.example.data.repository.AiRepository
 import com.example.data.repository.TapRepository
+import com.example.util.AnalyticsHelper
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -52,6 +51,7 @@ data class TapUiState(
     val optimisticEnergy: Int = 1000,
     val floatingParticles: List<FloatingParticle> = emptyList(),
     val isTurboActive: Boolean = false,
+    val isOnline: Boolean = true,
     val customCoinBitmap: Bitmap? = null,
     val isGeneratingAiCoin: Boolean = false,
     val aiCoinError: String? = null,
@@ -63,6 +63,7 @@ data class TapUiState(
 class TapViewModel(
     private val repository: TapRepository,
     private val aiRepository: AiRepository = AiRepository(),
+    private val analyticsHelper: AnalyticsHelper? = null,
     private val currentUserId: String,
     userEmail: String,
     displayName: String,
@@ -100,10 +101,25 @@ class TapViewModel(
         viewModelScope.launch {
             repository.observeUserBalance(currentUserId).collect { b ->
                 if (b != null) {
+                    val currentOptimisticCoins = _uiState.value.optimisticCoins
+                    val currentOptimisticEnergy = _uiState.value.optimisticEnergy
+
+                    val baseCoins = if (pendingCoinsToSync > 0) {
+                        (b.availableCoins + pendingCoinsToSync).coerceAtLeast(currentOptimisticCoins)
+                    } else {
+                        b.availableCoins
+                    }
+
+                    val baseEnergy = if (pendingCoinsToSync > 0) {
+                        currentOptimisticEnergy.coerceIn(0, b.maxEnergy)
+                    } else {
+                        b.currentEnergy
+                    }
+
                     _uiState.value = _uiState.value.copy(
                         balance = b,
-                        optimisticCoins = b.availableCoins + pendingCoinsToSync,
-                        optimisticEnergy = if (pendingCoinsToSync > 0) _uiState.value.optimisticEnergy else b.currentEnergy
+                        optimisticCoins = baseCoins,
+                        optimisticEnergy = baseEnergy
                     )
                 }
             }
@@ -111,53 +127,49 @@ class TapViewModel(
 
         // Observe boosters
         viewModelScope.launch {
-            repository.observeUserBoosters(currentUserId).collect { b ->
-                if (b != null) {
-                    val turboActive = b.turboBoostExpiresAt?.toDate()?.after(java.util.Date()) == true
-                    _uiState.value = _uiState.value.copy(boosters = b, isTurboActive = turboActive)
+            repository.observeUserBoosters(currentUserId).collect { boost ->
+                if (boost != null) {
+                    val isTurbo = boost.turboBoostExpiresAt != null && boost.turboBoostExpiresAt > System.currentTimeMillis()
+                    _uiState.value = _uiState.value.copy(boosters = boost, isTurboActive = isTurbo)
                 }
             }
         }
 
-        // Observe check-in
+        // Observe daily check-in
         viewModelScope.launch {
             repository.observeDailyCheckIn(currentUserId).collect { d ->
-                if (d != null) _uiState.value = _uiState.value.copy(dailyCheckIn = d)
+                _uiState.value = _uiState.value.copy(dailyCheckIn = d)
             }
         }
 
-        // Observe active tasks
+        // Observe tasks & submissions
         viewModelScope.launch {
-            repository.observeActiveTasks().collect { tasks ->
-                _uiState.value = _uiState.value.copy(tasks = tasks)
+            repository.observeActiveTasks().collect { t ->
+                _uiState.value = _uiState.value.copy(tasks = t)
+            }
+        }
+        viewModelScope.launch {
+            repository.observeUserTaskSubmissions(currentUserId).collect { s ->
+                _uiState.value = _uiState.value.copy(submissions = s)
             }
         }
 
-        // Observe user submissions
+        // Observe wallet withdrawals & transactions
         viewModelScope.launch {
-            repository.observeUserTaskSubmissions(currentUserId).collect { subs ->
-                _uiState.value = _uiState.value.copy(submissions = subs)
+            repository.observeUserWithdrawals(currentUserId).collect { w ->
+                _uiState.value = _uiState.value.copy(withdrawals = w)
+            }
+        }
+        viewModelScope.launch {
+            repository.observeTransactions(currentUserId).collect { tx ->
+                _uiState.value = _uiState.value.copy(transactions = tx)
             }
         }
 
-        // Observe withdrawals
+        // Observe remote application configuration
         viewModelScope.launch {
-            repository.observeUserWithdrawals(currentUserId).collect { wds ->
-                _uiState.value = _uiState.value.copy(withdrawals = wds)
-            }
-        }
-
-        // Observe transactions
-        viewModelScope.launch {
-            repository.observeTransactions(currentUserId).collect { txs ->
-                _uiState.value = _uiState.value.copy(transactions = txs)
-            }
-        }
-
-        // Observe app configuration (live backend update)
-        viewModelScope.launch {
-            repository.observeAppConfiguration().collect { cfg ->
-                _uiState.value = _uiState.value.copy(config = cfg)
+            repository.observeAppConfiguration().collect { c ->
+                _uiState.value = _uiState.value.copy(config = c)
             }
         }
 
@@ -168,21 +180,24 @@ class TapViewModel(
             }
         }
 
-        // Admin observations if admin
-        if (userEmail.equals("terseeenoch7@gmail.com", ignoreCase = true)) {
-            viewModelScope.launch {
-                repository.observeAllUsers().collect { users ->
-                    _uiState.value = _uiState.value.copy(allUsers = users)
-                }
+        // Observe admin all users and withdrawals
+        viewModelScope.launch {
+            repository.observeAllUsers().collect { u ->
+                _uiState.value = _uiState.value.copy(allUsers = u)
             }
-            viewModelScope.launch {
-                repository.observeAllWithdrawals().collect { wds ->
-                    _uiState.value = _uiState.value.copy(allWithdrawals = wds)
-                }
+        }
+        viewModelScope.launch {
+            repository.observeAllWithdrawals().collect { aw ->
+                _uiState.value = _uiState.value.copy(allWithdrawals = aw)
             }
         }
 
+        // Start background energy regeneration loop
         startEnergyRegenerationLoop()
+    }
+
+    fun setOnlineStatus(online: Boolean) {
+        _uiState.value = _uiState.value.copy(isOnline = online)
     }
 
     private fun startEnergyRegenerationLoop() {
@@ -190,22 +205,37 @@ class TapViewModel(
         energyRegenJob = viewModelScope.launch {
             while (isActive) {
                 delay(1000L)
-                val currentMax = _uiState.value.balance?.maxEnergy ?: _uiState.value.config.maxEnergy
-                val regenRate = _uiState.value.config.energyRegenPerSec + ((_uiState.value.boosters?.energyRecoveryLevel ?: 1) - 1)
-                val curr = _uiState.value.optimisticEnergy
-                if (curr < currentMax) {
-                    val next = (curr + regenRate).coerceAtMost(currentMax)
-                    _uiState.value = _uiState.value.copy(optimisticEnergy = next)
+                val state = _uiState.value
+                val maxEnergy = state.balance?.maxEnergy ?: 1000
+                val recoveryLvl = state.boosters?.energyRecoveryLevel ?: 1
+                val regenRate = (state.config.energyRegenPerSec * recoveryLvl).coerceAtLeast(1)
+
+                if (state.optimisticEnergy < maxEnergy) {
+                    val regenerated = (state.optimisticEnergy + regenRate).coerceAtMost(maxEnergy)
+                    _uiState.value = state.copy(optimisticEnergy = regenerated)
+                }
+
+                // Check turbo expiration
+                if (state.isTurboActive) {
+                    val expires = state.boosters?.turboBoostExpiresAt ?: 0L
+                    if (System.currentTimeMillis() > expires) {
+                        _uiState.value = _uiState.value.copy(isTurboActive = false)
+                    }
                 }
             }
         }
     }
 
     // ------------------------------------------------------------------------
-    // Tapping Engine
+    // Tapping Engine (Online-First Checked)
     // ------------------------------------------------------------------------
     fun onCoinTapped(tapX: Float, tapY: Float) {
         val state = _uiState.value
+        if (!state.isOnline) {
+            _uiState.value = state.copy(userFeedbackMessage = "Network required. Reconnecting to TAP server...")
+            return
+        }
+
         val config = state.config
         if (config.maintenanceMode) {
             _uiState.value = state.copy(userFeedbackMessage = "System is in maintenance mode. Taps are temporarily paused.")
@@ -214,7 +244,7 @@ class TapViewModel(
 
         val energyCost = config.energyPerTap
         if (state.optimisticEnergy < energyCost) {
-            _uiState.value = state.copy(userFeedbackMessage = "Energy depleted! Wait for regeneration or use a Refill.")
+            _uiState.value = state.copy(userFeedbackMessage = "Energy depleted! Wait for regeneration or use an Ad Refill.")
             return
         }
 
@@ -276,9 +306,9 @@ class TapViewModel(
                     newEnergy = energy,
                     tapsCount = taps
                 )
+                analyticsHelper?.logTapBatch(taps, coins)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to sync taps batch", e)
-                // Restore in case of transient failure
                 pendingCoinsToSync += coins
                 pendingTapsToSync += taps
             }
@@ -289,10 +319,23 @@ class TapViewModel(
     // Boosters & Upgrades
     // ------------------------------------------------------------------------
     fun buyBooster(type: String, cost: Long) {
+        val state = _uiState.value
+        if (!state.isOnline) {
+            _uiState.value = state.copy(userFeedbackMessage = "Active internet connection required to purchase boosters.")
+            return
+        }
+
         viewModelScope.launch {
             try {
                 flushPendingTaps()
                 repository.upgradeBooster(currentUserId, type, cost)
+                val lvl = when (type) {
+                    "multitap" -> (state.boosters?.multitapLevel ?: 1) + 1
+                    "energy_boost" -> (state.boosters?.energyBoostLevel ?: 1) + 1
+                    "recovery" -> (state.boosters?.energyRecoveryLevel ?: 1) + 1
+                    else -> 1
+                }
+                analyticsHelper?.logBoosterPurchased(type, lvl, cost)
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = "Upgraded successfully!")
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = e.message ?: "Upgrade failed")
@@ -301,9 +344,16 @@ class TapViewModel(
     }
 
     fun activateTurbo() {
+        val state = _uiState.value
+        if (!state.isOnline) {
+            _uiState.value = state.copy(userFeedbackMessage = "Active internet connection required.")
+            return
+        }
+
         viewModelScope.launch {
             try {
                 repository.activateTurboBoost(currentUserId, 60L)
+                analyticsHelper?.logBoosterPurchased("turbo_boost", 1, 0L)
                 _uiState.value = _uiState.value.copy(isTurboActive = true, userFeedbackMessage = "Turbo Boost 2x Active for 60s!")
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = e.message ?: "Turbo failed")
@@ -329,7 +379,13 @@ class TapViewModel(
     // Daily Reward
     // ------------------------------------------------------------------------
     fun claimDailyReward() {
-        val streak = (_uiState.value.dailyCheckIn?.currentStreak ?: 0) + 1
+        val state = _uiState.value
+        if (!state.isOnline) {
+            _uiState.value = state.copy(userFeedbackMessage = "Active internet connection required.")
+            return
+        }
+
+        val streak = (state.dailyCheckIn?.currentStreak ?: 0) + 1
         val rewardTable = listOf(500L, 1000L, 2000L, 3500L, 5000L, 7500L, 15000L)
         val amount = rewardTable.getOrElse((streak - 1) % 7) { 1000L }
 
@@ -337,6 +393,7 @@ class TapViewModel(
             try {
                 flushPendingTaps()
                 val claimedStreak = repository.claimDailyReward(currentUserId, amount)
+                analyticsHelper?.logDailyStreakClaimed(claimedStreak, amount)
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = "Day $claimedStreak reward of $amount coins claimed!")
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = e.message ?: "Claim failed")
@@ -348,10 +405,17 @@ class TapViewModel(
     // Tasks
     // ------------------------------------------------------------------------
     fun claimTask(task: TaskItem) {
+        val state = _uiState.value
+        if (!state.isOnline) {
+            _uiState.value = state.copy(userFeedbackMessage = "Active internet connection required.")
+            return
+        }
+
         viewModelScope.launch {
             try {
                 flushPendingTaps()
                 repository.completeAndClaimTask(currentUserId, task)
+                analyticsHelper?.logTaskCompleted(task.taskId, task.rewardCoins)
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = "+${task.rewardCoins} coins claimed for task: ${task.title}!")
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = e.message ?: "Task claim failed")
@@ -363,19 +427,25 @@ class TapViewModel(
     // Withdrawals
     // ------------------------------------------------------------------------
     fun requestWithdrawal(coinAmount: Long, method: String, paymentDetails: String) {
-        val fiat = coinAmount * _uiState.value.config.coinToUsdRate
+        val state = _uiState.value
+        if (!state.isOnline) {
+            _uiState.value = state.copy(userFeedbackMessage = "Active internet connection required.")
+            return
+        }
+
+        val fiat = coinAmount * state.config.coinToUsdRate
         viewModelScope.launch {
             try {
                 flushPendingTaps()
-                val id = repository.submitWithdrawalRequest(
+                val req = repository.submitWithdrawalRequest(
                     userId = currentUserId,
-                    username = _uiState.value.profile?.username ?: "User",
+                    username = state.profile?.username ?: "User",
                     coinAmount = coinAmount,
-                    fiatAmount = fiat,
-                    method = method,
-                    details = paymentDetails
+                    paymentMethod = method,
+                    paymentDetails = paymentDetails
                 )
-                _uiState.value = _uiState.value.copy(userFeedbackMessage = "Withdrawal $id submitted successfully!")
+                analyticsHelper?.logWithdrawalRequested(method, coinAmount, fiat)
+                _uiState.value = _uiState.value.copy(userFeedbackMessage = "Withdrawal ${req.withdrawalId} submitted successfully!")
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = e.message ?: "Withdrawal request failed")
             }
@@ -383,7 +453,7 @@ class TapViewModel(
     }
 
     // ------------------------------------------------------------------------
-    // AI Generative Coin Studio (1K, 2K, 4K affordance)
+    // AI Generative Coin Studio
     // ------------------------------------------------------------------------
     fun generateCustomCoin(prompt: String, resolution: String) {
         _uiState.value = _uiState.value.copy(isGeneratingAiCoin = true, aiCoinError = null)
@@ -444,7 +514,8 @@ class TapViewModel(
         viewModelScope.launch {
             try {
                 repository.saveAppConfiguration(newConfig)
-                _uiState.value = _uiState.value.copy(userFeedbackMessage = "Remote config published to all clients!")
+                analyticsHelper?.logAdminConfigUpdate()
+                _uiState.value = _uiState.value.copy(userFeedbackMessage = "Remote config published to Realtime Database!")
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userFeedbackMessage = e.message)
             }
