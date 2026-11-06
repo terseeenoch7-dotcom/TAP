@@ -1,0 +1,259 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Helper Primitives
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function isAdmin() {
+      return isSignedIn() && (
+        ('email' in request.auth.token && request.auth.token.email == 'terseeenoch7@gmail.com') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Validation Blueprint Helpers
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() > 0 &&
+             data.username is string && data.username.size() >= 2 && data.username.size() <= 40 &&
+             data.email is string && data.email.size() <= 120 &&
+             (!('photoUrl' in data) || data.photoUrl == null || (data.photoUrl is string && data.photoUrl.size() <= 1000)) &&
+             data.referralCode is string && data.referralCode.size() >= 4 && data.referralCode.size() <= 20 &&
+             (!('referredBy' in data) || data.referredBy == null || (data.referredBy is string && data.referredBy.size() <= 50)) &&
+             (!('accountLevel' in data) || (data.accountLevel is int && data.accountLevel >= 1 && data.accountLevel <= 1000)) &&
+             (!('isSuspended' in data) || data.isSuspended is bool) &&
+             (!('role' in data) || data.role in ['user', 'admin']);
+    }
+
+    function isValidUserBalance(data) {
+      return data.userId is string && data.userId.size() > 0 &&
+             data.availableCoins is int && data.availableCoins >= 0 &&
+             data.totalLifetimeCoins is int && data.totalLifetimeCoins >= 0 &&
+             data.totalTaps is int && data.totalTaps >= 0 &&
+             data.currentEnergy is int && data.currentEnergy >= 0 &&
+             data.maxEnergy is int && data.maxEnergy >= 100;
+    }
+
+    function isValidUserBoosters(data) {
+      return data.userId is string && data.userId.size() > 0 &&
+             data.multitapLevel is int && data.multitapLevel >= 1 && data.multitapLevel <= 50 &&
+             data.energyBoostLevel is int && data.energyBoostLevel >= 1 && data.energyBoostLevel <= 50 &&
+             data.energyRecoveryLevel is int && data.energyRecoveryLevel >= 1 && data.energyRecoveryLevel <= 50;
+    }
+
+    function isValidDailyCheckIn(data) {
+      return data.userId is string && data.userId.size() > 0 &&
+             data.currentStreak is int && data.currentStreak >= 0 &&
+             data.lastCheckInDate is string && data.lastCheckInDate.size() <= 20 &&
+             data.totalClaimed is int && data.totalClaimed >= 0;
+    }
+
+    function isValidTaskItem(data) {
+      return data.taskId is string && data.taskId.size() > 0 &&
+             data.title is string && data.title.size() >= 3 && data.title.size() <= 100 &&
+             data.description is string && data.description.size() <= 500 &&
+             data.category in ['daily', 'social', 'promotional', 'special', 'referral'] &&
+             data.rewardCoins is int && data.rewardCoins >= 0 &&
+             data.isActive is bool;
+    }
+
+    function isValidTaskSubmission(data) {
+      return data.userId is string && data.userId.size() > 0 &&
+             data.taskId is string && data.taskId.size() > 0 &&
+             data.status in ['pending', 'completed', 'claimed'] &&
+             data.rewardClaimed is bool;
+    }
+
+    function isValidWithdrawalRequest(data) {
+      return data.withdrawalId is string && data.withdrawalId.size() > 0 &&
+             data.userId is string && data.userId.size() > 0 &&
+             data.username is string && data.username.size() >= 2 &&
+             data.coinAmount is int && data.coinAmount > 0 &&
+             (data.fiatAmount is number) && data.fiatAmount >= 0 &&
+             data.paymentMethod in ['USDT_TON', 'PAYPAL', 'BANK'] &&
+             data.paymentDetails is string && data.paymentDetails.size() >= 3 && data.paymentDetails.size() <= 200 &&
+             data.status in ['PENDING', 'UNDER_REVIEW', 'APPROVED', 'COMPLETED', 'REJECTED'];
+    }
+
+    function isValidTransactionRecord(data) {
+      return data.userId is string && data.userId.size() > 0 &&
+             data.type in ['TAP_EARNING', 'BOOSTER_PURCHASE', 'DAILY_REWARD', 'TASK_REWARD', 'REFERRAL_BONUS', 'WITHDRAWAL', 'ADMIN_ADJUSTMENT'] &&
+             data.amount is int &&
+             data.description is string && data.description.size() <= 200;
+    }
+
+    function isValidNotificationItem(data) {
+      return data.recipientUserId is string && data.recipientUserId.size() > 0 &&
+             data.title is string && data.title.size() >= 2 && data.title.size() <= 100 &&
+             data.message is string && data.message.size() <= 500 &&
+             data.type in ['SYSTEM', 'TASK', 'WITHDRAWAL', 'REWARD', 'PROMO'] &&
+             data.isRead is bool;
+    }
+
+    function isValidAppConfiguration(data) {
+      return data.coinsPerTap is int && data.coinsPerTap >= 1 &&
+             data.maxEnergy is int && data.maxEnergy >= 100 &&
+             data.energyPerTap is int && data.energyPerTap >= 1 &&
+             data.energyRegenPerSec is int && data.energyRegenPerSec >= 1 &&
+             data.minWithdrawalCoins is int && data.minWithdrawalCoins >= 1000 &&
+             (data.coinToUsdRate is number) && data.coinToUsdRate > 0 &&
+             data.maintenanceMode is bool &&
+             data.version is int;
+    }
+
+    // 1. User Profiles
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'username', 'email', 'referralCode', 'createdAt']) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidUserProfile(incoming());
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (request.auth.uid == userId &&
+         incoming().userId == existing().userId &&
+         incoming().createdAt == existing().createdAt &&
+         isValidUserProfile(incoming()) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['username', 'photoUrl', 'accountLevel', 'updatedAt']))
+      );
+      allow delete: if isAdmin();
+
+      // Transactions Subcollection
+      match /transactions/{txId} {
+        allow get, list: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+        allow create: if isSignedIn() &&
+                         (request.auth.uid == userId || isAdmin()) &&
+                         incoming().userId == userId &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidTransactionRecord(incoming());
+        allow update, delete: if false;
+      }
+    }
+
+    // 2. User Balances
+    match /user_balances/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       isValidUserBalance(incoming());
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (request.auth.uid == userId &&
+         incoming().userId == existing().userId &&
+         isValidUserBalance(incoming()) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['availableCoins', 'totalLifetimeCoins', 'totalTaps', 'currentEnergy', 'maxEnergy', 'lastEnergyUpdatedAt', 'updatedAt']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 3. User Boosters
+    match /boosters/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       isValidUserBoosters(incoming());
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (request.auth.uid == userId &&
+         incoming().userId == existing().userId &&
+         isValidUserBoosters(incoming()) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['multitapLevel', 'energyBoostLevel', 'energyRecoveryLevel', 'turboBoostExpiresAt', 'autoTapExpiresAt', 'updatedAt']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 4. Daily Check-ins
+    match /daily_checkins/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       isValidDailyCheckIn(incoming());
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (request.auth.uid == userId &&
+         incoming().userId == existing().userId &&
+         isValidDailyCheckIn(incoming()) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['currentStreak', 'lastCheckInDate', 'lastClaimedAt', 'totalClaimed']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 5. Tasks Catalog
+    match /tasks/{taskId} {
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 6. Task Submissions
+    match /task_submissions/{submissionId} {
+      allow get: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+                       incoming().userId == request.auth.uid &&
+                       isValidTaskSubmission(incoming());
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid &&
+         incoming().userId == existing().userId &&
+         isValidTaskSubmission(incoming()) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'rewardClaimed', 'completedAt']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 7. Withdrawals Ledger
+    match /withdrawals/{withdrawalId} {
+      allow get: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().status == 'PENDING' &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidWithdrawalRequest(incoming());
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // 8. Notifications
+    match /notifications/{notifId} {
+      allow get, list: if isSignedIn() && (resource.data.recipientUserId in ['ALL', request.auth.uid] || isAdmin());
+      allow create: if isAdmin();
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (resource.data.recipientUserId == request.auth.uid &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['isRead']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 9. Remote App Configuration
+    match /app_configuration/{configId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 10. Admin Records
+    match /admins/{adminId} {
+      allow get: if isSignedIn();
+      allow list, create, update, delete: if isAdmin();
+    }
+  }
+}

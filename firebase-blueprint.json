@@ -1,0 +1,207 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account and profile information",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "referralCode": { "type": "string" },
+        "referredBy": { "type": "string" },
+        "accountLevel": { "type": "integer" },
+        "isSuspended": { "type": "boolean" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "username", "email", "referralCode", "createdAt"]
+    },
+    "UserBalance": {
+      "title": "UserBalance",
+      "description": "Financial and tapping balance state for a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "availableCoins": { "type": "integer" },
+        "totalLifetimeCoins": { "type": "integer" },
+        "totalTaps": { "type": "integer" },
+        "currentEnergy": { "type": "integer" },
+        "maxEnergy": { "type": "integer" },
+        "lastEnergyUpdatedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "availableCoins", "totalLifetimeCoins", "totalTaps", "currentEnergy", "maxEnergy"]
+    },
+    "UserBoosters": {
+      "title": "UserBoosters",
+      "description": "Booster upgrade levels and temporary status",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "multitapLevel": { "type": "integer" },
+        "energyBoostLevel": { "type": "integer" },
+        "energyRecoveryLevel": { "type": "integer" },
+        "turboBoostExpiresAt": { "type": "string", "format": "date-time" },
+        "autoTapExpiresAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "multitapLevel", "energyBoostLevel", "energyRecoveryLevel"]
+    },
+    "DailyCheckIn": {
+      "title": "DailyCheckIn",
+      "description": "Daily visit streak and claim record",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "currentStreak": { "type": "integer" },
+        "lastCheckInDate": { "type": "string" },
+        "lastClaimedAt": { "type": "string", "format": "date-time" },
+        "totalClaimed": { "type": "integer" }
+      },
+      "required": ["userId", "currentStreak", "lastCheckInDate", "totalClaimed"]
+    },
+    "TaskItem": {
+      "title": "TaskItem",
+      "description": "Earning task or challenge definition",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string", "enum": ["daily", "social", "promotional", "special", "referral"] },
+        "rewardCoins": { "type": "integer" },
+        "actionUrl": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["taskId", "title", "description", "category", "rewardCoins", "isActive"]
+    },
+    "TaskSubmission": {
+      "title": "TaskSubmission",
+      "description": "User completion status and reward claim for a task",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "taskId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "completed", "claimed"] },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "rewardClaimed": { "type": "boolean" }
+      },
+      "required": ["userId", "taskId", "status", "rewardClaimed"]
+    },
+    "WithdrawalRequest": {
+      "title": "WithdrawalRequest",
+      "description": "User withdrawal request and payment processing record",
+      "type": "object",
+      "properties": {
+        "withdrawalId": { "type": "string" },
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "coinAmount": { "type": "integer" },
+        "fiatAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["USDT_TON", "PAYPAL", "BANK"] },
+        "paymentDetails": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "UNDER_REVIEW", "APPROVED", "COMPLETED", "REJECTED"] },
+        "adminNote": { "type": "string" },
+        "transactionReference": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["withdrawalId", "userId", "username", "coinAmount", "fiatAmount", "paymentMethod", "paymentDetails", "status", "createdAt"]
+    },
+    "TransactionRecord": {
+      "title": "TransactionRecord",
+      "description": "Auditable financial ledger entry for coin balance changes",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["TAP_EARNING", "BOOSTER_PURCHASE", "DAILY_REWARD", "TASK_REWARD", "REFERRAL_BONUS", "WITHDRAWAL", "ADMIN_ADJUSTMENT"] },
+        "amount": { "type": "integer" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "amount", "description", "createdAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "In-app notification or system announcement",
+      "type": "object",
+      "properties": {
+        "recipientUserId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["SYSTEM", "TASK", "WITHDRAWAL", "REWARD", "PROMO"] },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recipientUserId", "title", "message", "type", "isRead", "createdAt"]
+    },
+    "AppConfiguration": {
+      "title": "AppConfiguration",
+      "description": "Dynamic remote configuration for application rules and monetization",
+      "type": "object",
+      "properties": {
+        "coinsPerTap": { "type": "integer" },
+        "maxEnergy": { "type": "integer" },
+        "energyPerTap": { "type": "integer" },
+        "energyRegenPerSec": { "type": "integer" },
+        "minWithdrawalCoins": { "type": "integer" },
+        "coinToUsdRate": { "type": "number" },
+        "maintenanceMode": { "type": "boolean" },
+        "bannerNotice": { "type": "string" },
+        "announcementActive": { "type": "boolean" },
+        "announcementTitle": { "type": "string" },
+        "announcementBody": { "type": "string" },
+        "announcementLink": { "type": "string" },
+        "version": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["coinsPerTap", "maxEnergy", "energyPerTap", "energyRegenPerSec", "minWithdrawalCoins", "coinToUsdRate", "maintenanceMode", "version"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Stores user account information and profile details"
+    },
+    "/user_balances/{userId}": {
+      "schema": { "$ref": "#/entities/UserBalance" },
+      "description": "Authoritative tapping balances and current energy reserves"
+    },
+    "/boosters/{userId}": {
+      "schema": { "$ref": "#/entities/UserBoosters" },
+      "description": "User booster upgrade levels and active duration timers"
+    },
+    "/daily_checkins/{userId}": {
+      "schema": { "$ref": "#/entities/DailyCheckIn" },
+      "description": "Daily visit streaks and reward claim records"
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/TaskItem" },
+      "description": "Admin-configured tasks and challenges"
+    },
+    "/task_submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/TaskSubmission" },
+      "description": "User task completion and claim status"
+    },
+    "/withdrawals/{withdrawalId}": {
+      "schema": { "$ref": "#/entities/WithdrawalRequest" },
+      "description": "User cash-out requests and review ledger"
+    },
+    "/users/{userId}/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/TransactionRecord" },
+      "description": "User financial transaction history ledger"
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "In-app notification messages"
+    },
+    "/app_configuration/{configId}": {
+      "schema": { "$ref": "#/entities/AppConfiguration" },
+      "description": "Central live application configuration"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-android-tap-b91e6fde-256e-4486-a8c3-12dcd5b25ef7",
+      "rules": "firestore.rules"
+    }
+  ],
+  "emulators": {
+    "firestore": {
+      "port": 8085
+    },
+    "auth": {
+      "port": 9099
+    }
+  }
+}

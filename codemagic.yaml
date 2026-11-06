@@ -1,0 +1,42 @@
+workflows:
+  android-release:
+    name: Android Release APK Build
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      android_signing:
+        - upload_keystore
+      groups:
+        - google_play_credentials
+      vars:
+        PACKAGE_NAME: "com.aistudio.tap.kxmpzq"
+    triggering:
+      events:
+        - push
+        - tag
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+    scripts:
+      - name: Set up local.properties
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
+      - name: Build Android Release APK
+        script: |
+          chmod +x gradlew || gradle wrapper
+          gradle assembleRelease
+      - name: Verify Signed APK Artifacts
+        script: |
+          ls -la app/build/outputs/apk/release/
+    artifacts:
+      - app/build/outputs/apk/release/*-release.apk
+      - app/build/outputs/mapping/**/mapping.txt
+      - app/build/outputs/bundle/release/*.aab
+    publishing:
+      email:
+        recipients:
+          - terseeenoch7@gmail.com
+        notify:
+          success: true
+          failure: true
