@@ -99,7 +99,8 @@ class TapRepository(
 
             override fun onCancelled(error: DatabaseError) {
                 Log.w(TAG, "Database error at $path: ${error.message}")
-                close(error.toException())
+                trySend(null)
+                close()
             }
         }
         addValueEventListener(listener)
@@ -118,7 +119,8 @@ class TapRepository(
 
             override fun onCancelled(error: DatabaseError) {
                 Log.w(TAG, "Database error at $path: ${error.message}")
-                close(error.toException())
+                trySend(emptyList())
+                close()
             }
         }
         addValueEventListener(listener)
@@ -152,54 +154,7 @@ class TapRepository(
         val generatedRefCode = "TAP-" + userId.take(5).uppercase()
         val username = displayName.ifBlank { "Tapper_${userId.take(4)}" }
 
-        if (firestore != null) {
-            val docRef = firestore.collection("users").document(userId)
-            val snapshot = docRef.get().await()
-            if (snapshot.exists()) {
-                val existing = snapshot.toObject(UserProfile::class.java)
-                if (existing != null) {
-                    if (isAdminUser && existing.role != "admin") {
-                        val updated = existing.copy(role = "admin")
-                        docRef.set(updated).await()
-                        return updated
-                    }
-                    return existing
-                }
-            }
-            val profile = UserProfile(
-                userId = userId,
-                username = username,
-                email = email,
-                photoUrl = photoUrl,
-                referralCode = generatedRefCode,
-                role = if (isAdminUser) "admin" else "user",
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
-            )
-            docRef.set(profile).await()
-            val balRef = firestore.collection("user_balances").document(userId)
-            if (!balRef.get().await().exists()) {
-                balRef.set(UserBalance(userId = userId)).await()
-            }
-            return profile
-        }
-
-        val userRef = rtdb.getReference("users").child(userId)
-        val snapshot = userRef.get().await()
-
-        if (snapshot.exists()) {
-            val existing = snapshot.getValue(UserProfile::class.java)
-            if (existing != null) {
-                if (isAdminUser && existing.role != "admin") {
-                    val updated = existing.copy(role = "admin")
-                    userRef.setValue(updated).await()
-                    return updated
-                }
-                return existing
-            }
-        }
-
-        val profile = UserProfile(
+        val defaultProfile = UserProfile(
             userId = userId,
             username = username,
             email = email,
@@ -210,17 +165,63 @@ class TapRepository(
             updatedAt = System.currentTimeMillis()
         )
 
-        userRef.setValue(profile).await()
-
-        if (isAdminUser) {
-            rtdb.getReference("admins").child(userId).setValue(true).await()
+        if (firestore != null) {
+            try {
+                val docRef = firestore.collection("users").document(userId)
+                val snapshot = docRef.get().await()
+                if (snapshot.exists()) {
+                    val existing = snapshot.toObject(UserProfile::class.java)
+                    if (existing != null) {
+                        if (isAdminUser && existing.role != "admin") {
+                            val updated = existing.copy(role = "admin")
+                            docRef.set(updated).await()
+                            return updated
+                        }
+                        return existing
+                    }
+                }
+                docRef.set(defaultProfile).await()
+                val balRef = firestore.collection("user_balances").document(userId)
+                if (!balRef.get().await().exists()) {
+                    balRef.set(UserBalance(userId = userId)).await()
+                }
+                return defaultProfile
+            } catch (e: Exception) {
+                Log.w(TAG, "Firestore getOrCreateUserProfile note (e.g. offline): ${e.message}")
+            }
         }
 
-        initializeUserBalanceIfMissing(userId)
-        initializeUserBoostersIfMissing(userId)
-        initializeDailyCheckInIfMissing(userId)
+        try {
+            val userRef = rtdb.getReference("users").child(userId)
+            val snapshot = userRef.get().await()
 
-        return profile
+            if (snapshot.exists()) {
+                val existing = snapshot.getValue(UserProfile::class.java)
+                if (existing != null) {
+                    if (isAdminUser && existing.role != "admin") {
+                        val updated = existing.copy(role = "admin")
+                        userRef.setValue(updated).await()
+                        return updated
+                    }
+                    return existing
+                }
+            }
+
+            userRef.setValue(defaultProfile).await()
+
+            if (isAdminUser) {
+                rtdb.getReference("admins").child(userId).setValue(true).await()
+            }
+
+            initializeUserBalanceIfMissing(userId)
+            initializeUserBoostersIfMissing(userId)
+            initializeDailyCheckInIfMissing(userId)
+
+            return defaultProfile
+        } catch (e: Exception) {
+            Log.w(TAG, "RTDB profile init note: ${e.message}")
+            return defaultProfile
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -571,7 +572,9 @@ class TapRepository(
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                Log.w(TAG, "Tasks observe cancelled: ${error.message}")
+                trySend(emptyList())
+                close()
             }
         }
         tasksRef.addValueEventListener(listener)
@@ -652,13 +655,13 @@ class TapRepository(
     // 6. Wallet & Withdrawals
     // ------------------------------------------------------------------------
     fun observeUserWithdrawals(userId: String): Flow<List<WithdrawalRequest>> = callbackFlow {
-        val ref = rtdb.getReference("withdrawals")
+        val ref = rtdb.getReference("user_withdrawals").child(userId)
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<WithdrawalRequest>()
                 for (child in snapshot.children) {
                     val req = child.getValue(WithdrawalRequest::class.java)
-                    if (req != null && req.userId == userId) {
+                    if (req != null) {
                         list.add(req)
                     }
                 }
@@ -667,7 +670,9 @@ class TapRepository(
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                Log.w(TAG, "observeUserWithdrawals note: ${error.message}")
+                trySend(emptyList())
+                close()
             }
         }
         ref.addValueEventListener(listener)
@@ -733,7 +738,16 @@ class TapRepository(
             updatedAt = System.currentTimeMillis()
         )
 
-        rtdb.getReference("withdrawals").child(withdrawalId).setValue(request).await()
+        try {
+            rtdb.getReference("user_withdrawals").child(userId).child(withdrawalId).setValue(request).await()
+        } catch (e: Exception) {
+            Log.w(TAG, "User withdrawal write note: ${e.message}")
+        }
+        try {
+            rtdb.getReference("withdrawals").child(withdrawalId).setValue(request).await()
+        } catch (e: Exception) {
+            Log.w(TAG, "Global withdrawal write note: ${e.message}")
+        }
         addTransactionRecord(userId, "WITHDRAWAL", -coinAmount, "Withdrawal request via $paymentMethod")
 
         return request
@@ -755,7 +769,9 @@ class TapRepository(
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                Log.w(TAG, "Transactions observe note: ${error.message}")
+                trySend(emptyList())
+                close()
             }
         }
         ref.addValueEventListener(listener)
@@ -830,7 +846,9 @@ class TapRepository(
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                Log.w(TAG, "observeAllWithdrawals note: ${error.message}")
+                trySend(emptyList())
+                close()
             }
         }
         ref.addValueEventListener(listener)
@@ -938,7 +956,9 @@ class TapRepository(
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                Log.w(TAG, "Leaderboard observe note: ${error.message}")
+                trySend(emptyList())
+                close()
             }
         }
         query.addValueEventListener(listener)

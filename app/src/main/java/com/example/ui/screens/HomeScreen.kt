@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -115,6 +116,7 @@ fun HomeScreen(
 ) {
     var showAdRewardDialog by remember { mutableStateOf(false) }
     var soundEnabled by remember { mutableStateOf(audioHapticHelper.isSoundEnabled) }
+    var hapticEnabled by remember { mutableStateOf(audioHapticHelper.isHapticEnabled) }
 
     Column(
         modifier = Modifier
@@ -199,6 +201,22 @@ fun HomeScreen(
                         imageVector = if (soundEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
                         contentDescription = "Toggle Audio",
                         tint = if (soundEnabled) TapGoldPrimary else TapTextMuted
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        hapticEnabled = !hapticEnabled
+                        audioHapticHelper.isHapticEnabled = hapticEnabled
+                        if (hapticEnabled) {
+                            audioHapticHelper.triggerHaptic(isTurbo = false)
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Vibration,
+                        contentDescription = "Toggle Vibration",
+                        tint = if (hapticEnabled) TapGoldPrimary else TapTextMuted
                     )
                 }
 
@@ -334,10 +352,11 @@ fun HomeScreen(
                 viewModel.removeParticle(id)
             },
             onEnergyDepleted = {
+                audioHapticHelper.triggerEnergyDepletedHaptic()
                 viewModel.onCoinTapped(0f, 0f)
             },
             playAudioHaptic = {
-                audioHapticHelper.playTapFeedback()
+                audioHapticHelper.playTapFeedback(isTurbo = uiState.isTurboActive)
             }
         )
 

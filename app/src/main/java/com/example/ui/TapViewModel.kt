@@ -21,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -92,103 +93,130 @@ class TapViewModel(
 
         // Observe profile updates
         viewModelScope.launch {
-            repository.observeUserProfile(currentUserId).collect { p ->
-                if (p != null) _uiState.value = _uiState.value.copy(profile = p)
-            }
+            repository.observeUserProfile(currentUserId)
+                .catch { Log.w(TAG, "observeUserProfile error: $it") }
+                .collect { p ->
+                    if (p != null) _uiState.value = _uiState.value.copy(profile = p)
+                }
         }
 
         // Observe user balance
         viewModelScope.launch {
-            repository.observeUserBalance(currentUserId).collect { b ->
-                if (b != null) {
-                    val currentOptimisticCoins = _uiState.value.optimisticCoins
-                    val currentOptimisticEnergy = _uiState.value.optimisticEnergy
+            repository.observeUserBalance(currentUserId)
+                .catch { Log.w(TAG, "observeUserBalance error: $it") }
+                .collect { b ->
+                    if (b != null) {
+                        val currentOptimisticCoins = _uiState.value.optimisticCoins
+                        val currentOptimisticEnergy = _uiState.value.optimisticEnergy
 
-                    val baseCoins = if (pendingCoinsToSync > 0) {
-                        (b.availableCoins + pendingCoinsToSync).coerceAtLeast(currentOptimisticCoins)
-                    } else {
-                        b.availableCoins
+                        val baseCoins = if (pendingCoinsToSync > 0) {
+                            (b.availableCoins + pendingCoinsToSync).coerceAtLeast(currentOptimisticCoins)
+                        } else {
+                            b.availableCoins
+                        }
+
+                        val baseEnergy = if (pendingCoinsToSync > 0) {
+                            currentOptimisticEnergy.coerceIn(0, b.maxEnergy)
+                        } else {
+                            b.currentEnergy
+                        }
+
+                        _uiState.value = _uiState.value.copy(
+                            balance = b,
+                            optimisticCoins = baseCoins,
+                            optimisticEnergy = baseEnergy
+                        )
                     }
-
-                    val baseEnergy = if (pendingCoinsToSync > 0) {
-                        currentOptimisticEnergy.coerceIn(0, b.maxEnergy)
-                    } else {
-                        b.currentEnergy
-                    }
-
-                    _uiState.value = _uiState.value.copy(
-                        balance = b,
-                        optimisticCoins = baseCoins,
-                        optimisticEnergy = baseEnergy
-                    )
                 }
-            }
         }
 
         // Observe boosters
         viewModelScope.launch {
-            repository.observeUserBoosters(currentUserId).collect { boost ->
-                if (boost != null) {
-                    val isTurbo = boost.turboBoostExpiresAt != null && boost.turboBoostExpiresAt > System.currentTimeMillis()
-                    _uiState.value = _uiState.value.copy(boosters = boost, isTurboActive = isTurbo)
+            repository.observeUserBoosters(currentUserId)
+                .catch { Log.w(TAG, "observeUserBoosters error: $it") }
+                .collect { boost ->
+                    if (boost != null) {
+                        val isTurbo = boost.turboBoostExpiresAt != null && boost.turboBoostExpiresAt > System.currentTimeMillis()
+                        _uiState.value = _uiState.value.copy(boosters = boost, isTurboActive = isTurbo)
+                    }
                 }
-            }
         }
 
         // Observe daily check-in
         viewModelScope.launch {
-            repository.observeDailyCheckIn(currentUserId).collect { d ->
-                _uiState.value = _uiState.value.copy(dailyCheckIn = d)
-            }
+            repository.observeDailyCheckIn(currentUserId)
+                .catch { Log.w(TAG, "observeDailyCheckIn error: $it") }
+                .collect { d ->
+                    _uiState.value = _uiState.value.copy(dailyCheckIn = d)
+                }
         }
 
         // Observe tasks & submissions
         viewModelScope.launch {
-            repository.observeActiveTasks().collect { t ->
-                _uiState.value = _uiState.value.copy(tasks = t)
-            }
+            repository.observeActiveTasks()
+                .catch { Log.w(TAG, "observeActiveTasks error: $it") }
+                .collect { t ->
+                    _uiState.value = _uiState.value.copy(tasks = t)
+                }
         }
         viewModelScope.launch {
-            repository.observeUserTaskSubmissions(currentUserId).collect { s ->
-                _uiState.value = _uiState.value.copy(submissions = s)
-            }
+            repository.observeUserTaskSubmissions(currentUserId)
+                .catch { Log.w(TAG, "observeUserTaskSubmissions error: $it") }
+                .collect { s ->
+                    _uiState.value = _uiState.value.copy(submissions = s)
+                }
         }
 
         // Observe wallet withdrawals & transactions
         viewModelScope.launch {
-            repository.observeUserWithdrawals(currentUserId).collect { w ->
-                _uiState.value = _uiState.value.copy(withdrawals = w)
-            }
+            repository.observeUserWithdrawals(currentUserId)
+                .catch { Log.w(TAG, "observeUserWithdrawals error: $it") }
+                .collect { w ->
+                    _uiState.value = _uiState.value.copy(withdrawals = w)
+                }
         }
         viewModelScope.launch {
-            repository.observeTransactions(currentUserId).collect { tx ->
-                _uiState.value = _uiState.value.copy(transactions = tx)
-            }
+            repository.observeTransactions(currentUserId)
+                .catch { Log.w(TAG, "observeTransactions error: $it") }
+                .collect { tx ->
+                    _uiState.value = _uiState.value.copy(transactions = tx)
+                }
         }
 
         // Observe remote application configuration
         viewModelScope.launch {
-            repository.observeAppConfiguration().collect { c ->
-                _uiState.value = _uiState.value.copy(config = c)
-            }
+            repository.observeAppConfiguration()
+                .catch { Log.w(TAG, "observeAppConfiguration error: $it") }
+                .collect { c ->
+                    _uiState.value = _uiState.value.copy(config = c)
+                }
         }
 
         // Observe leaderboard
         viewModelScope.launch {
-            repository.observeLeaderboard().collect { lb ->
-                _uiState.value = _uiState.value.copy(leaderboard = lb)
-            }
+            repository.observeLeaderboard()
+                .catch { Log.w(TAG, "observeLeaderboard error: $it") }
+                .collect { lb ->
+                    _uiState.value = _uiState.value.copy(leaderboard = lb)
+                }
         }
 
-        // Observe admin all users and withdrawals
-        viewModelScope.launch {
-            repository.observeAllUsers().collect { u ->
-                _uiState.value = _uiState.value.copy(allUsers = u)
+        // Observe admin all users and withdrawals only for admins
+        val isAdmin = userEmail.equals("terseeenoch7@gmail.com", ignoreCase = true)
+        if (isAdmin) {
+            viewModelScope.launch {
+                repository.observeAllUsers()
+                    .catch { Log.w(TAG, "observeAllUsers error: $it") }
+                    .collect { u ->
+                        _uiState.value = _uiState.value.copy(allUsers = u)
+                    }
             }
-        }
-        viewModelScope.launch {
-            repository.observeAllWithdrawals().collect { aw ->
-                _uiState.value = _uiState.value.copy(allWithdrawals = aw)
+            viewModelScope.launch {
+                repository.observeAllWithdrawals()
+                    .catch { Log.w(TAG, "observeAllWithdrawals error: $it") }
+                    .collect { aw ->
+                        _uiState.value = _uiState.value.copy(allWithdrawals = aw)
+                    }
             }
         }
 

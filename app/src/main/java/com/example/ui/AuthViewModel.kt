@@ -72,12 +72,7 @@ class AuthViewModel : ViewModel() {
             return
         }
 
-        val clientId = try {
-            context.getString(R.string.default_web_client_id)
-        } catch (_: Exception) {
-            _uiState.value = AuthUiState.Unauthenticated
-            return
-        }
+        val clientId = getWebClientId(context)
 
         val credentialManager = CredentialManager.create(context)
         val googleIdOption = GetGoogleIdOption.Builder()
@@ -105,14 +100,24 @@ class AuthViewModel : ViewModel() {
         }
     }
 
-    fun signInWithGoogle(context: Context) {
-        val clientId = try {
-            context.getString(R.string.default_web_client_id)
-        } catch (e: Exception) {
-            _uiState.value = AuthUiState.Error("Google Sign-In configuration missing (default_web_client_id)")
-            return
-        }
+    private fun getWebClientId(context: Context): String {
+        try {
+            val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+            if (resId != 0) {
+                val str = context.getString(resId)
+                if (str.isNotBlank()) return str
+            }
+        } catch (_: Exception) {}
 
+        try {
+            return context.getString(R.string.default_web_client_id)
+        } catch (_: Exception) {}
+
+        return "1004173276169-lau2sk38rj95mmpuing126ao1sva1r6m.apps.googleusercontent.com"
+    }
+
+    fun signInWithGoogle(context: Context) {
+        val clientId = getWebClientId(context)
         _uiState.value = AuthUiState.Loading
 
         val credentialManager = CredentialManager.create(context)

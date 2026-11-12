@@ -51,7 +51,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -100,6 +103,8 @@ fun CentralTapButton(
     playAudioHaptic: () -> Unit = {}
 ) {
     var isPressed by remember { mutableStateOf(false) }
+    val localView = LocalView.current
+    val hapticFeedback = LocalHapticFeedback.current
 
     // Spring animation for tactile 3D compression
     val buttonScale by animateFloatAsState(
@@ -220,6 +225,13 @@ fun CentralTapButton(
                             detectTapGestures(
                                 onPress = { offset ->
                                     isPressed = true
+                                    try {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        localView.performHapticFeedback(
+                                            android.view.HapticFeedbackConstants.KEYBOARD_TAP,
+                                            android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING or android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+                                        )
+                                    } catch (_: Exception) {}
                                     playAudioHaptic()
                                     if (isEnergyDepleted) {
                                         onEnergyDepleted()
