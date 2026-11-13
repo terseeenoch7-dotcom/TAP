@@ -23,14 +23,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Vibration
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -354,7 +354,7 @@ fun ProfileScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Default.VolumeUp, contentDescription = null, tint = TapGoldPrimary)
+                        Icon(imageVector = Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, tint = TapGoldPrimary)
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(text = "Tapping Sound Effects", fontSize = 14.sp, color = TapTextPrimary)
                     }
@@ -437,7 +437,7 @@ fun ProfileScreen(
                 .height(48.dp)
                 .testTag("sign_out_button")
         ) {
-            Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null)
+            Icon(imageVector = Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text(text = "Sign Out", fontWeight = FontWeight.Bold)
         }

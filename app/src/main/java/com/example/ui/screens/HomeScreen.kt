@@ -32,17 +32,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RocketLaunch
-import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Vibration
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -198,7 +195,7 @@ fun HomeScreen(
                     }
                 ) {
                     Icon(
-                        imageVector = if (soundEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                        imageVector = if (soundEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                         contentDescription = "Toggle Audio",
                         tint = if (soundEnabled) TapGoldPrimary else TapTextMuted
                     )
@@ -326,6 +323,29 @@ fun HomeScreen(
                     fontWeight = FontWeight.SemiBold,
                     color = TapGreenSuccess
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clickable { viewModel.syncLocalTapsWithServer() }
+                        .padding(top = 4.dp)
+                        .testTag("rtdb_sync_badge")
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(if (uiState.isOnline) TapGreenSuccess else TapOrangeAccent)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (uiState.isOnline) "ONLINE-FIRST • RTDB SYNCED" else "OFFLINE • PENDING SYNC",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        color = if (uiState.isOnline) TapGreenSuccess else TapOrangeAccent
+                    )
+                }
             }
         }
 

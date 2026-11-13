@@ -229,7 +229,7 @@ fun CentralTapButton(
                                         hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                         localView.performHapticFeedback(
                                             android.view.HapticFeedbackConstants.KEYBOARD_TAP,
-                                            android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING or android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+                                            android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
                                         )
                                     } catch (_: Exception) {}
                                     playAudioHaptic()

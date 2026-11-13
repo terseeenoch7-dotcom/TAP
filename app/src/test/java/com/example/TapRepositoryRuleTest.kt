@@ -57,6 +57,33 @@ class TapRepositoryRuleTest : FirestoreEmulatorTestBase() {
   }
 
   @Test
+  fun syncLocalTapsToRealtimeDatabase_updatesBalance() = runBlocking {
+    val email = "charlie_${System.nanoTime()}@test.com"
+    val uid = signInTestUser(email)
+    val repository = TapRepository(firestore)
+
+    withTimeout(DEFAULT_TIMEOUT_MS) {
+      repository.getOrCreateUserProfile(uid, email, "CharlieTapper", null)
+      val balance = repository.syncLocalTapsToRealtimeDatabase(
+        userId = uid,
+        localTapsCount = 25L,
+        coinsEarned = 250L,
+        remainingEnergy = 975
+      )
+      assertNotNull(balance)
+      assertTrue(balance.availableCoins >= 250L)
+      assertTrue(balance.totalTaps >= 25L)
+    }
+
+    val observed = withTimeout(DEFAULT_TIMEOUT_MS) {
+      repository.observeUserBalance(uid).first { it != null && it.availableCoins >= 250L }
+    }
+    assertNotNull(observed)
+    assertEquals(250L, observed!!.availableCoins)
+    assertEquals(25L, observed.totalTaps)
+  }
+
+  @Test
   fun unauthenticatedAccess_failsWithPermissionDenied() = runBlocking {
     auth.signOut()
     val repository = TapRepository(firestore)

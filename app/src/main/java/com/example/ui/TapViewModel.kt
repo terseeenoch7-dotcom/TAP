@@ -317,28 +317,45 @@ class TapViewModel(
     }
 
     fun flushPendingTaps() {
+        syncLocalTapsWithServer()
+    }
+
+    /**
+     * Synchronizes the user's local tap count with the Firebase Realtime Database URL
+     * 'https://gen-lang-client-0113954346-default-rtdb.firebaseio.com/', ensuring that balances
+     * are updated server-side for an online-first experience.
+     */
+    fun syncLocalTapsWithServer(onComplete: ((Boolean) -> Unit)? = null) {
         val coins = pendingCoinsToSync
         val taps = pendingTapsToSync
         val energy = _uiState.value.optimisticEnergy
-        if (coins <= 0 && taps <= 0) return
+        if (coins <= 0 && taps <= 0) {
+            onComplete?.invoke(true)
+            return
+        }
 
         pendingCoinsToSync = 0L
         pendingTapsToSync = 0L
 
         viewModelScope.launch {
             try {
-                repository.syncTapsBatch(
+                val updatedBalance = repository.syncLocalTapsToRealtimeDatabase(
                     userId = currentUserId,
+                    localTapsCount = taps,
                     coinsEarned = coins,
-                    energyConsumed = 0,
-                    newEnergy = energy,
-                    tapsCount = taps
+                    remainingEnergy = energy
                 )
                 analyticsHelper?.logTapBatch(taps, coins)
+                _uiState.value = _uiState.value.copy(
+                    balance = updatedBalance,
+                    userFeedbackMessage = "Balances updated server-side in RTDB"
+                )
+                onComplete?.invoke(true)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to sync taps batch", e)
+                Log.e(TAG, "Failed to sync local taps with server", e)
                 pendingCoinsToSync += coins
                 pendingTapsToSync += taps
+                onComplete?.invoke(false)
             }
         }
     }

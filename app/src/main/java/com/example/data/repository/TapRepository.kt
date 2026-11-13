@@ -19,6 +19,7 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.MutableData
+import com.google.firebase.database.ServerValue
 import com.google.firebase.database.Transaction
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.firestore.FirebaseFirestore
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -259,61 +261,90 @@ class TapRepository(
         }
     }
 
-    suspend fun syncTapsBatch(
+    /**
+     * Synchronizes the user's local tap count with the Firebase Realtime Database URL
+     * 'https://gen-lang-client-0113954346-default-rtdb.firebaseio.com/', ensuring that balances
+     * are updated server-side for an online-first experience.
+     */
+    suspend fun syncLocalTapsToRealtimeDatabase(
         userId: String,
+        localTapsCount: Long,
         coinsEarned: Long,
-        energyConsumed: Int,
-        newEnergy: Int,
-        tapsCount: Long
-    ) {
-        if (coinsEarned <= 0 && energyConsumed <= 0) return
-
-        if (firestore != null) {
-            val balRef = firestore.collection("user_balances").document(userId)
-            firestore.runTransaction { tx ->
-                val snap = tx.get(balRef)
-                if (!snap.exists()) {
-                    val initial = UserBalance(
-                        userId = userId,
-                        availableCoins = coinsEarned,
-                        totalLifetimeCoins = coinsEarned,
-                        totalTaps = tapsCount,
-                        currentEnergy = newEnergy,
-                        maxEnergy = 1000,
-                        lastEnergyUpdatedAt = System.currentTimeMillis(),
-                        updatedAt = System.currentTimeMillis()
-                    )
-                    tx.set(balRef, initial)
-                } else {
-                    val curCoins = snap.getLong("availableCoins") ?: 0L
-                    val curTotal = snap.getLong("totalLifetimeCoins") ?: 0L
-                    val curTaps = snap.getLong("totalTaps") ?: 0L
-                    tx.update(
-                        balRef,
-                        mapOf(
-                            "availableCoins" to curCoins + coinsEarned,
-                            "totalLifetimeCoins" to curTotal + coinsEarned,
-                            "totalTaps" to curTaps + tapsCount,
-                            "currentEnergy" to newEnergy,
-                            "lastEnergyUpdatedAt" to System.currentTimeMillis(),
-                            "updatedAt" to System.currentTimeMillis()
-                        )
-                    )
-                }
-            }.await()
+        remainingEnergy: Int
+    ): UserBalance {
+        if (coinsEarned <= 0L && localTapsCount <= 0L) {
+            val currentSnap = try { rtdb.getReference("user_balances").child(userId).get().await() } catch (_: Exception) { null }
+            return currentSnap?.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
         }
 
+        // 1. Dual-cloud synchronization: Increment Firestore user_balances if present
+        if (firestore != null) {
+            try {
+                val balRef = firestore.collection("user_balances").document(userId)
+                firestore.runTransaction { tx ->
+                    val snap = tx.get(balRef)
+                    if (!snap.exists()) {
+                        val initial = UserBalance(
+                            userId = userId,
+                            availableCoins = coinsEarned,
+                            totalLifetimeCoins = coinsEarned,
+                            totalTaps = localTapsCount,
+                            currentEnergy = remainingEnergy,
+                            maxEnergy = 1000,
+                            lastEnergyUpdatedAt = System.currentTimeMillis(),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        tx.set(balRef, initial)
+                    } else {
+                        val curCoins = snap.getLong("availableCoins") ?: 0L
+                        val curTotal = snap.getLong("totalLifetimeCoins") ?: 0L
+                        val curTaps = snap.getLong("totalTaps") ?: 0L
+                        tx.update(
+                            balRef,
+                            mapOf(
+                                "availableCoins" to curCoins + coinsEarned,
+                                "totalLifetimeCoins" to curTotal + coinsEarned,
+                                "totalTaps" to curTaps + localTapsCount,
+                                "currentEnergy" to remainingEnergy,
+                                "lastEnergyUpdatedAt" to System.currentTimeMillis(),
+                                "updatedAt" to System.currentTimeMillis()
+                            )
+                        )
+                    }
+                }.await()
+            } catch (e: Exception) {
+                Log.w(TAG, "Firestore balance increment note: ${e.message}")
+            }
+        }
+
+        // 2. Server-side atomic balance update on Firebase Realtime Database URL:
+        // https://gen-lang-client-0113954346-default-rtdb.firebaseio.com/
+        val balRef = rtdb.getReference("user_balances").child(userId)
+
         try {
-            val ref = rtdb.getReference("user_balances").child(userId)
-            if (firestore != null) {
-                ref.runTransaction(object : Transaction.Handler {
+            val serverUpdates = hashMapOf<String, Any>(
+                "userId" to userId,
+                "availableCoins" to ServerValue.increment(coinsEarned),
+                "totalLifetimeCoins" to ServerValue.increment(coinsEarned),
+                "totalTaps" to ServerValue.increment(localTapsCount),
+                "currentEnergy" to remainingEnergy,
+                "lastEnergyUpdatedAt" to ServerValue.TIMESTAMP,
+                "updatedAt" to ServerValue.TIMESTAMP
+            )
+            withTimeoutOrNull(2000L) {
+                balRef.updateChildren(serverUpdates).await()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "RTDB server-side update note: ${e.message}")
+            try {
+                balRef.runTransaction(object : Transaction.Handler {
                     override fun doTransaction(currentData: MutableData): Transaction.Result {
                         val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
                         val updated = balance.copy(
                             availableCoins = balance.availableCoins + coinsEarned,
                             totalLifetimeCoins = balance.totalLifetimeCoins + coinsEarned,
-                            totalTaps = balance.totalTaps + tapsCount,
-                            currentEnergy = newEnergy.coerceIn(0, balance.maxEnergy),
+                            totalTaps = balance.totalTaps + localTapsCount,
+                            currentEnergy = remainingEnergy.coerceIn(0, balance.maxEnergy),
                             lastEnergyUpdatedAt = System.currentTimeMillis(),
                             updatedAt = System.currentTimeMillis()
                         )
@@ -323,36 +354,46 @@ class TapRepository(
 
                     override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {}
                 })
-            } else {
-                suspendCancellableCoroutine<Unit> { continuation ->
-                    ref.runTransaction(object : Transaction.Handler {
-                        override fun doTransaction(currentData: MutableData): Transaction.Result {
-                            val balance = currentData.getValue(UserBalance::class.java) ?: UserBalance(userId = userId)
-                            val updated = balance.copy(
-                                availableCoins = balance.availableCoins + coinsEarned,
-                                totalLifetimeCoins = balance.totalLifetimeCoins + coinsEarned,
-                                totalTaps = balance.totalTaps + tapsCount,
-                                currentEnergy = newEnergy.coerceIn(0, balance.maxEnergy),
-                                lastEnergyUpdatedAt = System.currentTimeMillis(),
-                                updatedAt = System.currentTimeMillis()
-                            )
-                            currentData.value = updated
-                            return Transaction.success(currentData)
-                        }
-
-                        override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
-                            if (error != null) {
-                                continuation.resumeWithException(error.toException())
-                            } else {
-                                continuation.resume(Unit)
-                            }
-                        }
-                    })
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "RTDB transaction: ${e.message}")
+            } catch (_: Exception) {}
         }
+
+        val updatedSnap = try {
+            withTimeoutOrNull(1500L) { balRef.get().await() }
+        } catch (_: Exception) { null }
+
+        var resultBalance = updatedSnap?.getValue(UserBalance::class.java)
+        if (resultBalance == null && firestore != null) {
+            try {
+                val fSnap = firestore.collection("user_balances").document(userId).get().await()
+                if (fSnap.exists()) {
+                    resultBalance = fSnap.toObject(UserBalance::class.java)
+                }
+            } catch (_: Exception) {}
+        }
+
+        return resultBalance ?: UserBalance(
+            userId = userId,
+            availableCoins = coinsEarned,
+            totalLifetimeCoins = coinsEarned,
+            totalTaps = localTapsCount,
+            currentEnergy = remainingEnergy
+        )
+    }
+
+    suspend fun syncTapsBatch(
+        userId: String,
+        coinsEarned: Long,
+        energyConsumed: Int,
+        newEnergy: Int,
+        tapsCount: Long
+    ) {
+        if (coinsEarned <= 0 && energyConsumed <= 0 && tapsCount <= 0) return
+        syncLocalTapsToRealtimeDatabase(
+            userId = userId,
+            localTapsCount = tapsCount,
+            coinsEarned = coinsEarned,
+            remainingEnergy = newEnergy
+        )
     }
 
     suspend fun refillEnergy(userId: String, amount: Int) {

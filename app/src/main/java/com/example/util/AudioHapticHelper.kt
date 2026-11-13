@@ -24,6 +24,7 @@ class AudioHapticHelper(private val context: Context) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                @Suppress("DEPRECATION")
                 vm?.defaultVibrator ?: (context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)
             } else {
                 @Suppress("DEPRECATION")
@@ -61,9 +62,9 @@ class AudioHapticHelper(private val context: Context) {
     fun triggerHaptic(view: View? = null, isTurbo: Boolean = false) {
         if (!isHapticEnabled) return
 
-        // 1. Perform immediate view haptic feedback bypassing global sound/vibration toggles if possible
+        // 1. Perform immediate view haptic feedback
         try {
-            val flags = HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING or HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+            val flags = HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
             val feedbackConstant = if (isTurbo) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     HapticFeedbackConstants.CONFIRM
@@ -107,7 +108,7 @@ class AudioHapticHelper(private val context: Context) {
     fun triggerEnergyDepletedHaptic(view: View? = null) {
         if (!isHapticEnabled) return
         try {
-            val flags = HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING or HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+            val flags = HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 view?.performHapticFeedback(HapticFeedbackConstants.REJECT, flags)
             } else {
