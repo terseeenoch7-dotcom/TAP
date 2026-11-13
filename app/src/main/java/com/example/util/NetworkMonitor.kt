@@ -20,8 +20,11 @@ class NetworkMonitor(
     context: Context,
     database: FirebaseDatabase
 ) {
-    private val connectivityManager =
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    private val connectivityManager = try {
+        context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    } catch (_: Exception) {
+        null
+    }
 
     private val _isDeviceOnline = MutableStateFlow(checkInitialConnectivity())
     private val _isFirebaseConnected = MutableStateFlow(false)
@@ -29,6 +32,21 @@ class NetworkMonitor(
 
     val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
     val isFirebaseConnected: StateFlow<Boolean> = _isFirebaseConnected.asStateFlow()
+
+    private val connectedRef = try { database.getReference(".info/connected") } catch (_: Exception) { null }
+    private val connectedListener = object : ValueEventListener {
+        override fun onDataChange(snapshot: DataSnapshot) {
+            try {
+                val connected = snapshot.getValue(Boolean::class.java) ?: false
+                _isFirebaseConnected.value = connected
+                updateOnlineState()
+            } catch (_: Exception) {}
+        }
+
+        override fun onCancelled(error: DatabaseError) {
+            // No-op
+        }
+    }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -63,28 +81,35 @@ class NetworkMonitor(
         }
 
         // Also track Firebase Realtime Database live connection status
-        database.getReference(".info/connected").addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val connected = snapshot.getValue(Boolean::class.java) ?: false
-                _isFirebaseConnected.value = connected
-                updateOnlineState()
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                // No-op
-            }
-        })
+        try {
+            connectedRef?.addValueEventListener(connectedListener)
+        } catch (_: Exception) {
+            // Fallback gracefully
+        }
     }
 
     private fun checkInitialConnectivity(): Boolean {
-        val manager = connectivityManager ?: return true
-        val activeNetwork = manager.activeNetwork ?: return false
-        val capabilities = manager.getNetworkCapabilities(activeNetwork) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return try {
+            val manager = connectivityManager ?: return true
+            val activeNetwork = manager.activeNetwork ?: return false
+            val capabilities = manager.getNetworkCapabilities(activeNetwork) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            true
+        }
     }
 
     private fun updateOnlineState() {
         // App is online if device has connectivity or active socket to Firebase
         _isOnline.value = _isDeviceOnline.value || _isFirebaseConnected.value
+    }
+
+    fun release() {
+        try {
+            connectivityManager?.unregisterNetworkCallback(networkCallback)
+        } catch (_: Exception) {}
+        try {
+            connectedRef?.removeEventListener(connectedListener)
+        } catch (_: Exception) {}
     }
 }

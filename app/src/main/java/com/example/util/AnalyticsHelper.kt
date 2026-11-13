@@ -4,29 +4,43 @@ import android.content.Context
 import android.os.Bundle
 import com.google.firebase.analytics.FirebaseAnalytics
 
-class AnalyticsHelper(context: Context) {
-    private val analytics: FirebaseAnalytics = FirebaseAnalytics.getInstance(context)
+class AnalyticsHelper(private val context: Context) {
+    private val analytics: FirebaseAnalytics? by lazy {
+        try {
+            FirebaseAnalytics.getInstance(context.applicationContext)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun safeLog(event: String, bundle: Bundle) {
+        try {
+            analytics?.logEvent(event, bundle)
+        } catch (_: Exception) {
+            // Ignore analytics logging failures
+        }
+    }
 
     fun logScreenView(screenName: String) {
         val bundle = Bundle().apply {
             putString(FirebaseAnalytics.Param.SCREEN_NAME, screenName)
             putString(FirebaseAnalytics.Param.SCREEN_CLASS, "MainActivity")
         }
-        analytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle)
+        safeLog(FirebaseAnalytics.Event.SCREEN_VIEW, bundle)
     }
 
     fun logLogin(method: String) {
         val bundle = Bundle().apply {
             putString(FirebaseAnalytics.Param.METHOD, method)
         }
-        analytics.logEvent(FirebaseAnalytics.Event.LOGIN, bundle)
+        safeLog(FirebaseAnalytics.Event.LOGIN, bundle)
     }
 
     fun logSignUp(method: String) {
         val bundle = Bundle().apply {
             putString(FirebaseAnalytics.Param.METHOD, method)
         }
-        analytics.logEvent(FirebaseAnalytics.Event.SIGN_UP, bundle)
+        safeLog(FirebaseAnalytics.Event.SIGN_UP, bundle)
     }
 
     fun logTapBatch(tapsCount: Long, coinsEarned: Long) {
@@ -34,7 +48,7 @@ class AnalyticsHelper(context: Context) {
             putLong("tap_count", tapsCount)
             putLong("coins_earned", coinsEarned)
         }
-        analytics.logEvent("tap_batch_synced", bundle)
+        safeLog("tap_batch_synced", bundle)
     }
 
     fun logBoosterPurchased(boosterKey: String, level: Int, cost: Long) {
@@ -44,7 +58,7 @@ class AnalyticsHelper(context: Context) {
             putLong(FirebaseAnalytics.Param.VALUE, cost)
             putInt("booster_level", level)
         }
-        analytics.logEvent("booster_purchased", bundle)
+        safeLog("booster_purchased", bundle)
     }
 
     fun logDailyStreakClaimed(streak: Int, rewardCoins: Long) {
@@ -52,7 +66,7 @@ class AnalyticsHelper(context: Context) {
             putInt("streak_day", streak)
             putLong("reward_coins", rewardCoins)
         }
-        analytics.logEvent("daily_streak_claimed", bundle)
+        safeLog("daily_streak_claimed", bundle)
     }
 
     fun logTaskCompleted(taskId: String, rewardCoins: Long) {
@@ -60,7 +74,7 @@ class AnalyticsHelper(context: Context) {
             putString("task_id", taskId)
             putLong("reward_coins", rewardCoins)
         }
-        analytics.logEvent("task_completed", bundle)
+        safeLog("task_completed", bundle)
     }
 
     fun logWithdrawalRequested(method: String, coinAmount: Long, fiatAmount: Double) {
@@ -70,10 +84,10 @@ class AnalyticsHelper(context: Context) {
             putDouble(FirebaseAnalytics.Param.VALUE, fiatAmount)
             putString(FirebaseAnalytics.Param.CURRENCY, "USD")
         }
-        analytics.logEvent("withdrawal_requested", bundle)
+        safeLog("withdrawal_requested", bundle)
     }
 
     fun logAdminConfigUpdate() {
-        analytics.logEvent("admin_config_updated", Bundle())
+        safeLog("admin_config_updated", Bundle())
     }
 }

@@ -383,7 +383,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(18.dp))
 
         // Energy Progress Bar
-        val maxEnergy = uiState.balance?.maxEnergy ?: uiState.config.maxEnergy
+        val maxEnergy = (uiState.balance?.maxEnergy ?: uiState.config.maxEnergy).coerceAtLeast(1)
         val currentEnergy = uiState.optimisticEnergy
         val energyFraction = (currentEnergy.toFloat() / maxEnergy.toFloat()).coerceIn(0f, 1f)
 

@@ -48,41 +48,39 @@ class TapRepository(
     private val firestore: FirebaseFirestore? = null
 ) {
 
-    constructor(context: Context) : this(
-        FirebaseDatabase.getInstance(RTDB_URL).apply {
-            try {
-                setPersistenceEnabled(true)
+    companion object {
+        private fun createDefaultRtdb(): FirebaseDatabase {
+            val db = try {
+                FirebaseDatabase.getInstance(RTDB_URL)
             } catch (_: Exception) {
-                // Ignore if already initialized
+                FirebaseDatabase.getInstance()
             }
-        },
+            try {
+                db.setPersistenceEnabled(true)
+            } catch (_: Exception) {
+                // Ignore if already initialized or persistence already in use
+            }
+            return db
+        }
+    }
+
+    constructor(context: Context) : this(
+        createDefaultRtdb(),
         try { Firebase.firestore } catch (_: Exception) { null }
     )
 
     constructor() : this(
-        FirebaseDatabase.getInstance(RTDB_URL).apply {
-            try {
-                setPersistenceEnabled(true)
-            } catch (_: Exception) {
-                // Ignore if already initialized
-            }
-        },
+        createDefaultRtdb(),
         try { Firebase.firestore } catch (_: Exception) { null }
     )
 
     constructor(firestore: FirebaseFirestore) : this(
-        FirebaseDatabase.getInstance(RTDB_URL).apply {
-            try {
-                setPersistenceEnabled(true)
-            } catch (_: Exception) {
-                // Ignore if already initialized
-            }
-        },
+        createDefaultRtdb(),
         firestore
     )
 
     val database: FirebaseDatabase get() = rtdb
-    private val auth = Firebase.auth
+    private val auth by lazy { Firebase.auth }
 
     fun requireUserId(): String {
         return auth.currentUser?.uid
@@ -95,7 +93,12 @@ class TapRepository(
     private fun <T : Any> DatabaseReference.toObjectFlow(clazz: Class<T>): Flow<T?> = callbackFlow {
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                val value = snapshot.getValue(clazz)
+                val value = try {
+                    snapshot.getValue(clazz)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Deserialization warning at $path: ${e.message}")
+                    null
+                }
                 trySend(value)
             }
 
@@ -114,7 +117,11 @@ class TapRepository(
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<T>()
                 for (child in snapshot.children) {
-                    child.getValue(clazz)?.let { list.add(it) }
+                    try {
+                        child.getValue(clazz)?.let { list.add(it) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping malformed child at $path/${child.key}: ${e.message}")
+                    }
                 }
                 trySend(list)
             }
@@ -136,7 +143,12 @@ class TapRepository(
         if (firestore != null) {
             val docRef = firestore.collection("users").document(userId)
             return docRef.snapshots().map { snapshot ->
-                if (snapshot.exists()) snapshot.toObject(UserProfile::class.java) else null
+                try {
+                    if (snapshot.exists()) snapshot.toObject(UserProfile::class.java) else null
+                } catch (e: Exception) {
+                    Log.w(TAG, "Firestore profile deserialize note: ${e.message}")
+                    null
+                }
             }
         }
         val ref = rtdb.getReference("users").child(userId)
@@ -233,7 +245,12 @@ class TapRepository(
         if (firestore != null) {
             val docRef = firestore.collection("user_balances").document(userId)
             return docRef.snapshots().map { snapshot ->
-                if (snapshot.exists()) snapshot.toObject(UserBalance::class.java) else null
+                try {
+                    if (snapshot.exists()) snapshot.toObject(UserBalance::class.java) else null
+                } catch (e: Exception) {
+                    Log.w(TAG, "Firestore balance deserialize note: ${e.message}")
+                    null
+                }
             }
         }
         val ref = rtdb.getReference("user_balances").child(userId)
@@ -604,9 +621,13 @@ class TapRepository(
                 }
                 val list = mutableListOf<TaskItem>()
                 for (child in snapshot.children) {
-                    val task = child.getValue(TaskItem::class.java)
-                    if (task != null && task.isActive) {
-                        list.add(task)
+                    try {
+                        val task = child.getValue(TaskItem::class.java)
+                        if (task != null && task.isActive) {
+                            list.add(task)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping malformed task ${child.key}: ${e.message}")
                     }
                 }
                 trySend(list)
@@ -623,17 +644,21 @@ class TapRepository(
     }
 
     private fun seedDefaultTasks() {
-        val defaults = listOf(
-            TaskItem(taskId = "TASK-01", title = "Daily Check-In", description = "Claim your daily reward streak in the app", category = "daily", rewardCoins = 500L),
-            TaskItem(taskId = "TASK-02", title = "Follow TAP on X (Twitter)", description = "Stay tuned with official announcements and drop alerts", category = "social", rewardCoins = 1500L, actionUrl = "https://x.com"),
-            TaskItem(taskId = "TASK-03", title = "Join Official Telegram Group", description = "Connect with global tappers and earn bonus coins", category = "social", rewardCoins = 2500L, actionUrl = "https://t.me"),
-            TaskItem(taskId = "TASK-04", title = "Subscribe to YouTube Channel", description = "Watch strategy guides and tutorials", category = "promotional", rewardCoins = 3000L, actionUrl = "https://youtube.com"),
-            TaskItem(taskId = "TASK-05", title = "Invite 3 Friends to TAP", description = "Share your referral code to unlock massive rewards", category = "referral", rewardCoins = 7500L),
-            TaskItem(taskId = "TASK-06", title = "Reach 5,000 Total Taps", description = "Prove your dedication as a Master Tapper", category = "special", rewardCoins = 5000L)
-        )
-        val tasksRef = rtdb.getReference("tasks")
-        for (item in defaults) {
-            tasksRef.child(item.taskId).setValue(item)
+        try {
+            val defaults = listOf(
+                TaskItem(taskId = "TASK-01", title = "Daily Check-In", description = "Claim your daily reward streak in the app", category = "daily", rewardCoins = 500L),
+                TaskItem(taskId = "TASK-02", title = "Follow TAP on X (Twitter)", description = "Stay tuned with official announcements and drop alerts", category = "social", rewardCoins = 1500L, actionUrl = "https://x.com"),
+                TaskItem(taskId = "TASK-03", title = "Join Official Telegram Group", description = "Connect with global tappers and earn bonus coins", category = "social", rewardCoins = 2500L, actionUrl = "https://t.me"),
+                TaskItem(taskId = "TASK-04", title = "Subscribe to YouTube Channel", description = "Watch strategy guides and tutorials", category = "promotional", rewardCoins = 3000L, actionUrl = "https://youtube.com"),
+                TaskItem(taskId = "TASK-05", title = "Invite 3 Friends to TAP", description = "Share your referral code to unlock massive rewards", category = "referral", rewardCoins = 7500L),
+                TaskItem(taskId = "TASK-06", title = "Reach 5,000 Total Taps", description = "Prove your dedication as a Master Tapper", category = "special", rewardCoins = 5000L)
+            )
+            val tasksRef = rtdb.getReference("tasks")
+            for (item in defaults) {
+                tasksRef.child(item.taskId).setValue(item)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Seed default tasks note: ${e.message}")
         }
     }
 
@@ -701,9 +726,13 @@ class TapRepository(
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<WithdrawalRequest>()
                 for (child in snapshot.children) {
-                    val req = child.getValue(WithdrawalRequest::class.java)
-                    if (req != null) {
-                        list.add(req)
+                    try {
+                        val req = child.getValue(WithdrawalRequest::class.java)
+                        if (req != null) {
+                            list.add(req)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping malformed withdrawal ${child.key}: ${e.message}")
                     }
                 }
                 list.sortByDescending { it.createdAt }
@@ -803,7 +832,11 @@ class TapRepository(
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<TransactionRecord>()
                 for (child in snapshot.children) {
-                    child.getValue(TransactionRecord::class.java)?.let { list.add(it) }
+                    try {
+                        child.getValue(TransactionRecord::class.java)?.let { list.add(it) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping malformed transaction ${child.key}: ${e.message}")
+                    }
                 }
                 list.sortByDescending { it.createdAt }
                 trySend(list)
@@ -839,13 +872,20 @@ class TapRepository(
         val configRef = rtdb.getReference("app_config").child("main")
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                if (!snapshot.exists()) {
-                    val defaultConfig = AppConfiguration()
-                    configRef.setValue(defaultConfig)
-                    trySend(defaultConfig)
-                } else {
-                    val config = snapshot.getValue(AppConfiguration::class.java) ?: AppConfiguration()
-                    trySend(config)
+                try {
+                    if (!snapshot.exists()) {
+                        val defaultConfig = AppConfiguration()
+                        try {
+                            configRef.setValue(defaultConfig)
+                        } catch (_: Exception) {}
+                        trySend(defaultConfig)
+                    } else {
+                        val config = snapshot.getValue(AppConfiguration::class.java) ?: AppConfiguration()
+                        trySend(config)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Config deserialize warning: ${e.message}")
+                    trySend(AppConfiguration())
                 }
             }
 
@@ -880,7 +920,11 @@ class TapRepository(
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<WithdrawalRequest>()
                 for (child in snapshot.children) {
-                    child.getValue(WithdrawalRequest::class.java)?.let { list.add(it) }
+                    try {
+                        child.getValue(WithdrawalRequest::class.java)?.let { list.add(it) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping malformed withdrawal ${child.key}: ${e.message}")
+                    }
                 }
                 list.sortByDescending { it.createdAt }
                 trySend(list)
@@ -990,7 +1034,11 @@ class TapRepository(
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<UserBalance>()
                 for (child in snapshot.children) {
-                    child.getValue(UserBalance::class.java)?.let { list.add(it) }
+                    try {
+                        child.getValue(UserBalance::class.java)?.let { list.add(it) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Skipping malformed leaderboard entry ${child.key}: ${e.message}")
+                    }
                 }
                 list.sortByDescending { it.totalLifetimeCoins }
                 trySend(list)

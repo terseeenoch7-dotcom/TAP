@@ -35,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -176,6 +177,9 @@ fun AuthenticatedApp(
     val context = LocalContext.current
     val repository = remember { TapRepository(context) }
     val networkMonitor = remember(repository) { NetworkMonitor(context, repository.database) }
+    DisposableEffect(networkMonitor) {
+        onDispose { networkMonitor.release() }
+    }
     val isOnline by networkMonitor.isOnline.collectAsState()
 
     val tapViewModel: TapViewModel = viewModel(

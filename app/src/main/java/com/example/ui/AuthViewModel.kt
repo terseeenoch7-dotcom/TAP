@@ -67,36 +67,41 @@ class AuthViewModel : ViewModel() {
     }
 
     fun attemptAutoSignIn(context: Context) {
-        if (auth.currentUser != null) {
-            _uiState.value = AuthUiState.Authenticated(auth.currentUser!!)
-            return
-        }
-
-        val clientId = getWebClientId(context)
-
-        val credentialManager = CredentialManager.create(context)
-        val googleIdOption = GetGoogleIdOption.Builder()
-            .setFilterByAuthorizedAccounts(true)
-            .setServerClientId(clientId)
-            .setAutoSelectEnabled(true)
-            .build()
-
-        val request = GetCredentialRequest.Builder()
-            .addCredentialOption(googleIdOption)
-            .build()
-
-        viewModelScope.launch {
-            try {
-                val result = credentialManager.getCredential(context, request)
-                val credential = result.credential
-                if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                    val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-                    val authCred = GoogleAuthProvider.getCredential(idToken, null)
-                    auth.signInWithCredential(authCred).await()
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Silent auto sign-in unfulfilled: ${e.message}")
+        try {
+            if (auth.currentUser != null) {
+                _uiState.value = AuthUiState.Authenticated(auth.currentUser!!)
+                return
             }
+
+            val activity = context as? Activity ?: return
+            val clientId = getWebClientId(activity)
+
+            val credentialManager = CredentialManager.create(activity)
+            val googleIdOption = GetGoogleIdOption.Builder()
+                .setFilterByAuthorizedAccounts(true)
+                .setServerClientId(clientId)
+                .setAutoSelectEnabled(true)
+                .build()
+
+            val request = GetCredentialRequest.Builder()
+                .addCredentialOption(googleIdOption)
+                .build()
+
+            viewModelScope.launch {
+                try {
+                    val result = credentialManager.getCredential(activity, request)
+                    val credential = result.credential
+                    if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                        val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                        val authCred = GoogleAuthProvider.getCredential(idToken, null)
+                        auth.signInWithCredential(authCred).await()
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Silent auto sign-in unfulfilled: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Auto sign-in initialization skipped: ${e.message}")
         }
     }
 
@@ -117,19 +122,18 @@ class AuthViewModel : ViewModel() {
     }
 
     fun signInWithGoogle(context: Context) {
-        val clientId = getWebClientId(context)
         _uiState.value = AuthUiState.Loading
-
-        val credentialManager = CredentialManager.create(context)
-        val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
-        val request = GetCredentialRequest.Builder()
-            .addCredentialOption(signInOption)
-            .build()
-
         viewModelScope.launch {
             try {
                 val activity = context as? Activity
                     ?: throw IllegalStateException("Context must be an Activity for Google Sign-In")
+                val clientId = getWebClientId(activity)
+                val credentialManager = CredentialManager.create(activity)
+                val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(signInOption)
+                    .build()
+
                 val result = credentialManager.getCredential(activity, request)
                 val credential = result.credential
                 if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
